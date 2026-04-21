@@ -1,16 +1,14 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
+import os
 import shutil
 import tempfile
-import os
-import json
-from dotenv import load_dotenv
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.config.parser import ConfigParser
-import fitz  # PyMuPDF
-from PIL import Image
-import io
+
+from data_management.pdf_to_image import pdf_to_image
+
 
 app = FastAPI(
     title="API Marker PDF Extraction",
@@ -20,51 +18,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
-def pdf_to_image(pdf_path, output_dir, dpi=300):
-    """
-    Convertit un PDF monopage en image
-    
-    Args:
-        pdf_path (str): Chemin vers le fichier PDF
-        output_dir (str): Répertoire de sortie pour l'image
-        dpi (int): Résolution de l'image (défaut: 300 DPI)
-    
-    Returns:
-        str: Chemin vers l'image générée
-    """
-    try:
-        # Ouvrir le PDF
-        pdf_document = fitz.open(pdf_path)
-        
-        # Vérifier que c'est bien un PDF monopage
-        if len(pdf_document) != 1:
-            raise ValueError(f"Le PDF contient {len(pdf_document)} pages. Seuls les PDFs monopages sont supportés.")
-        
-        # Récupérer la première (et unique) page
-        page = pdf_document[0]
-        
-        # Définir la matrice de transformation pour la résolution
-        mat = fitz.Matrix(dpi/72, dpi/72)
-        
-        # Convertir la page en image
-        pix = page.get_pixmap(matrix=mat)
-        
-        # Convertir en PIL Image
-        img_data = pix.tobytes("png")
-        img = Image.open(io.BytesIO(img_data))
-        
-        # Sauvegarder l'image
-        image_filename = os.path.splitext(os.path.basename(pdf_path))[0] + ".png"
-        image_path = os.path.join(output_dir, image_filename)
-        img.save(image_path, "PNG", optimize=True)
-        
-        # Fermer le document PDF
-        pdf_document.close()
-        
-        return image_path
-        
-    except Exception as e:
-        raise Exception(f"Erreur lors de la conversion PDF vers image: {str(e)}")
+
 
 @app.post("/extract")
 def extract(pdf: UploadFile = File(...)):
@@ -116,7 +70,7 @@ def extract(pdf: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail=f"Marker conversion failed: {e}")
         
         # Le rendu JSON complet
-        result = rendered.dict()
+        result = rendered.model_dump()
         
         # Ajout des informations sur l'image générée dans la réponse
         result["image_info"] = {
@@ -126,6 +80,7 @@ def extract(pdf: UploadFile = File(...)):
         }
         
         return JSONResponse(content=result)
+
 
 if __name__ == "__main__":
     import uvicorn
