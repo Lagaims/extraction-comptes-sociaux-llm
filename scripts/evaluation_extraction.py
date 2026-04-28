@@ -24,6 +24,7 @@ Usage :
 """
 
 import io
+import re
 import argparse
 from pathlib import Path
 
@@ -35,19 +36,51 @@ from extraction_common.s3 import get_s3_fs
 BUCKET = "projet-extraction-tableaux"
 S3_ANNOTATIONS = f"{BUCKET}/annotations/clean"
 S3_EVAL_OUTPUT = f"{BUCKET}/reprise/eval/evaluation.parquet"
+S3_CORRESPONDANCES = f"{BUCKET}/reprise/correspondances.parquet"
+
+_SIREN_RE = re.compile(r"\d{9}")
 
 METHODS: dict[str, str] = {
-    "marker":         f"{BUCKET}/reprise/output_csv/marker",
-    "opendataloader": f"{BUCKET}/reprise/output_csv/opendataloader",
-    "chandra":        f"{BUCKET}/reprise/output_csv/chandra",
+    "marker":           f"{BUCKET}/reprise/output_csv/marker",
+    "opendataloader":   f"{BUCKET}/reprise/output_csv/opendataloader",
+    "chandra":          f"{BUCKET}/reprise/output_csv/chandra",
+    "marker_last_work": f"{BUCKET}/LLM_eval/output_csv/marker_last_work",
 }
 
 
 # ── Chargement S3 ─────────────────────────────────────────────────────────────
 
+def _load_correspondances(fs) -> dict[str, list[str]]:
+    """
+    Charge le parquet de correspondances.
+    Retourne {pure_siren: [xlsx_path_1, ...]} (chemins s3fs sans schéma s3://).
+    Le SIREN pur (9 chiffres) est extrait du stem PDF (colonne 'siren').
+    """
+    with fs.open(S3_CORRESPONDANCES, "rb") as f:
+        df = pd.read_parquet(f)
+    mapping: dict[str, list[str]] = {}
+    for _, row in df.iterrows():
+        m = _SIREN_RE.search(str(row["siren"]))
+        if not m:
+            continue
+        try:
+            xlsx_paths = sorted(p.removeprefix("s3://") for p in row["xlsx"])
+        except TypeError:
+            continue
+        if xlsx_paths:
+            mapping[m.group()] = xlsx_paths
+    return mapping
+
+
 def _load_csv(fs, path: str) -> pd.DataFrame:
+    import csv as _csv
     with fs.open(path, "r", encoding="utf-8-sig") as f:
-        return pd.read_csv(f, header=None, dtype=str, sep=None, engine="python").fillna("")
+        rows = list(_csv.reader(f, delimiter=";"))
+    if not rows:
+        return pd.DataFrame()
+    max_cols = max(len(r) for r in rows)
+    padded = [r + [""] * (max_cols - len(r)) for r in rows]
+    return pd.DataFrame(padded, dtype=str).fillna("")
 
 
 def _load_xlsx(fs, path: str) -> pd.DataFrame:
@@ -71,6 +104,31 @@ def _list_pairs(fs, pred_prefix: str) -> list[tuple[str, str, str]]:
         print(f"    [WARN] {len(only_pred)} prédiction(s) sans annotation.")
 
     return [(name, ann[name], pred[name]) for name in sorted(set(ann) & set(pred))]
+
+
+def _list_pairs_from_correspondances(fs, pred_prefix: str) -> list[tuple[str, str, str]]:
+    """
+    Apparie annotations et prédictions via le parquet de correspondances.
+    La i-ème annotation (triée) d'un SIREN est appariée à la prédiction {siren}_{i}.csv.
+    Retourne une liste de (nom, annotation_path, prediction_path).
+    """
+    correspondances = _load_correspondances(fs)
+    pred = {Path(p).stem: p for p in fs.glob(f"{pred_prefix}/*.csv")}
+
+    pairs = []
+    matched_preds: set[str] = set()
+    for pure_siren, xlsx_paths in correspondances.items():
+        for rank, xlsx_path in enumerate(xlsx_paths, start=1):
+            stem = f"{pure_siren}_{rank}"
+            if stem in pred:
+                pairs.append((stem, xlsx_path, pred[stem]))
+                matched_preds.add(stem)
+
+    unmatched = sorted(set(pred) - matched_preds)
+    if unmatched:
+        print(f"    [WARN] {len(unmatched)} prédiction(s) sans annotation.")
+
+    return sorted(pairs)
 
 
 # ── Helpers cellules ──────────────────────────────────────────────────────────
@@ -313,7 +371,10 @@ def evaluate_dataset(threshold: float = 0.5) -> pd.DataFrame:
     all_results: list[dict] = []
 
     for method, pred_prefix in METHODS.items():
-        pairs = _list_pairs(fs, pred_prefix)
+        if method == "marker_last_work":
+            pairs = _list_pairs_from_correspondances(fs, pred_prefix)
+        else:
+            pairs = _list_pairs(fs, pred_prefix)
         print(f"\n[{method}] {len(pairs)} paire(s) trouvée(s)")
 
         for name, ann_path, pred_path in pairs:

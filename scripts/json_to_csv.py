@@ -6,10 +6,13 @@ Marker      : s3://projet-extraction-tableaux/reprise/output_marker/
                → s3://projet-extraction-tableaux/reprise/output_csv/marker/
 OpenDataLoader : s3://projet-extraction-tableaux/reprise/output_opendataloader/
                → s3://projet-extraction-tableaux/reprise/output_csv/opendataloader/
+marker_last_work : s3://projet-extraction-tableaux/LLM_eval/response_json/
+               → s3://projet-extraction-tableaux/LLM_eval/output_csv/marker_last_work/
 
 Usage :
     uv run json_to_csv.py --method marker
     uv run json_to_csv.py --method opendataloader
+    uv run json_to_csv.py --method marker_last_work
     uv run json_to_csv.py --method all          (défaut)
 """
 
@@ -27,7 +30,7 @@ from extraction_common.s3 import get_s3_fs
 
 BUCKET = "projet-extraction-tableaux"
 
-SOURCES: dict[str, dict[str, str]] = {
+SOURCES: dict[str, dict] = {
     "marker": {
         "input": f"{BUCKET}/reprise/output_marker",
         "output": f"{BUCKET}/reprise/output_csv/marker",
@@ -42,6 +45,12 @@ SOURCES: dict[str, dict[str, str]] = {
         "input": f"{BUCKET}/reprise/output_chandra",
         "output": f"{BUCKET}/reprise/output_csv/chandra",
         "ext": ".json",
+    },
+    "marker_last_work": {
+        "input": f"{BUCKET}/LLM_eval/response_json",
+        "output": f"{BUCKET}/LLM_eval/output_csv/marker_last_work",
+        "ext": ".json",
+        "strip_prefix": "response_",
     },
 }
 
@@ -127,11 +136,17 @@ class _TableHTMLParser(HTMLParser):
         self._row: list[str] = []
         self._cell: str = ""
         self._in_cell: bool = False
+        self._colspan: int = 1
 
     def handle_starttag(self, tag, attrs):
         if tag in ("th", "td"):
             self._in_cell = True
             self._cell = ""
+            attrs_dict = dict(attrs)
+            try:
+                self._colspan = int(attrs_dict.get("colspan", 1))
+            except (ValueError, TypeError):
+                self._colspan = 1
         elif tag == "br" and self._in_cell:
             self._cell += " "
         elif tag == "tr":
@@ -143,6 +158,9 @@ class _TableHTMLParser(HTMLParser):
         if tag in ("th", "td"):
             self._in_cell = False
             self._row.append(self._cell.strip())
+            for _ in range(self._colspan - 1):
+                self._row.append("")
+            self._colspan = 1
         elif tag == "tr" and self._row:
             self._rows.append(self._row)
         elif tag == "table" and self._rows:
@@ -182,10 +200,12 @@ def _load(fs: s3fs.S3FileSystem, path: str, ext: str):
 def run_pipeline(method: str, fs: s3fs.S3FileSystem) -> None:
     cfg = SOURCES[method]
     ext = cfg["ext"]
+    strip_prefix = cfg.get("strip_prefix", "")
     extractors: dict[str, TableExtractor] = {
-        "marker":         MarkerTableExtractor(),
-        "opendataloader": OpenDataLoaderTableExtractor(),
-        "chandra":        ChandraTableExtractor(),
+        "marker":           MarkerTableExtractor(),
+        "marker_last_work": MarkerTableExtractor(),
+        "opendataloader":   OpenDataLoaderTableExtractor(),
+        "chandra":          ChandraTableExtractor(),
     }
     extractor = extractors[method]
 
@@ -194,7 +214,8 @@ def run_pipeline(method: str, fs: s3fs.S3FileSystem) -> None:
 
     ok = skipped = errors = 0
     for file_key in input_files:
-        siren = Path(file_key).stem
+        raw_stem = Path(file_key).stem
+        siren = raw_stem.removeprefix(strip_prefix) if strip_prefix else raw_stem
         if fs.exists(f"{cfg['output']}/{siren}_1.csv"):
             print(f"  [SKIP]  {siren}")
             skipped += 1
@@ -228,7 +249,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Conversion JSON → CSV (Marker / OpenDataLoader)")
     parser.add_argument(
         "--method",
-        choices=["marker", "opendataloader", "chandra", "all"],
+        choices=["marker", "opendataloader", "chandra", "marker_last_work", "all"],
         default="all",
         help="Source à convertir (défaut : all)",
     )
