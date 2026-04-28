@@ -1,0 +1,7 @@
+-e ../../libs
+fastapi
+uvicorn[standard]
+PyMuPDF
+PyPDF2
+requests
+pydantic

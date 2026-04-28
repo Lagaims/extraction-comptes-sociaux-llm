@@ -1,0 +1,6 @@
+-e ../../libs
+opendataloader-pdf
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
