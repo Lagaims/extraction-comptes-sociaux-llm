@@ -5,10 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "argparse>=1.4.0",
-    "dotenv>=0.9.9",
+    "extraction-common",
+    "pymupdf>=1.24.0",
+    "marker-pdf>=1.10.2",
     "pandas>=3.0.2",
-    "pathlib>=1.0.1",
+    "pyarrow>=24.0.0",
     "requests>=2.33.1",
-    "s3fs>=2026.3.0",
+    "langfuse>=4.5.1",
+    "openpyxl>=3.1.0",
 ]
+
+[tool.uv.sources]
+extraction-common = { path = "../libs" }

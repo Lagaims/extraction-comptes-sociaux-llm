@@ -1,42 +1,54 @@
-import os
-import s3fs
 import pandas as pd
 from pathlib import Path
+
+from extraction_common.s3 import get_s3_fs
 
 path_xlsx = "s3://projet-extraction-tableaux/annotations/clean/*.xlsx"
 path_pdf = "s3://projet-extraction-tableaux/pdf/tableaux_representatifs/*.pdf"
 
-fs = s3fs.S3FileSystem(
-    key=os.environ["AWS_ACCESS_KEY_ID"],
-    secret=os.environ["AWS_SECRET_ACCESS_KEY"],
-    token=os.environ.get("AWS_SESSION_TOKEN"),
-    client_kwargs={"endpoint_url": "https://"+os.environ["AWS_S3_ENDPOINT"]},
-)
-
-print(fs.ls(""))
+fs = get_s3_fs()
 
 xlsx_files = fs.glob(path_xlsx)
 pdf_files = fs.glob(path_pdf)
 
-# Indexation par SIRET (nom de base sans extension)
-xlsx_par_siret = {Path(f).stem: f"s3://{f}" for f in xlsx_files}
-pdf_par_siret = {Path(f).stem: f"s3://{f}" for f in pdf_files}
 
-tous_les_sirets = set(xlsx_par_siret.keys()) | set(pdf_par_siret.keys())
+# Suppression des suffixes _1, _2, ... pour retrouver le SIREN de base
+def siren_base(stem):
+    import re
+    return re.sub(r"_\d+$", "", stem)
+
+
+# Regroupement des xlsx par SIREN de base (plusieurs fichiers possibles)
+xlsx_par_siren = {}
+for f in xlsx_files:
+    siren = siren_base(Path(f).stem)
+    xlsx_par_siren.setdefault(siren, []).append(f"s3://{f}")
+
+# Tri pour un ordre stable
+for siren in xlsx_par_siren:
+    xlsx_par_siren[siren].sort()
+
+pdf_par_siren = {Path(f).stem: f"s3://{f}" for f in pdf_files}
+
+tous_les_sirens = set(xlsx_par_siren.keys()) | set(pdf_par_siren.keys())
 
 correspondances = {
-    siret: {
-        "pdf": pdf_par_siret.get(siret),
-        "xlsx": xlsx_par_siret.get(siret),
+    siren: {
+        "pdf": pdf_par_siren.get(siren),
+        "xlsx": xlsx_par_siren.get(siren),
     }
-    for siret in sorted(tous_les_sirets)
+    for siren in sorted(tous_les_sirens)
 }
 
 df = pd.DataFrame([
-    {"siret": siret, "pdf": vals["pdf"], "xlsx": vals["xlsx"]}
-    for siret, vals in correspondances.items()
+    {"siren": siren, "pdf": vals["pdf"], "xlsx": vals["xlsx"]}
+    for siren, vals in correspondances.items()
 ])
 
 output_path = "s3://projet-extraction-tableaux/reprise/correspondances.parquet"
+print(f"Nombre de siren détectés : {len(df)}")
+print(f"Nombre de pdf détectés : {sum(1 for v in correspondances.values() if v["pdf"] is not None)}")
+print(f"Nombre de xlsx d'annotations détectés : {sum(len(v["xlsx"]) for v in correspondances.values() if v["xlsx"] is not None)}")
+
 with fs.open(output_path, "wb") as f:
     df.to_parquet(f, index=False)
