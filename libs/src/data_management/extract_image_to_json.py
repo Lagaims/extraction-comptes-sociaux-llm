@@ -40,7 +40,7 @@ def extract_pdf(pdf_path: str, tmpdir: str, artifact_dict: dict) -> dict:
     config = {
         "output_format": "json",
         "force_ocr": True,
-        "use_llm": True,
+        "use_llm": False, # Premier test sans l'utilisation d'un LLM
         "llm_service": "marker.services.openai.OpenAIService",
         "openai_base_url": os.getenv("PROXY_URL"),
         "openai_model": "gemma4-31b",
