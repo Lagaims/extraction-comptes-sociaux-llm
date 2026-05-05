@@ -1,25 +1,27 @@
 """
 API d'extraction de tableaux via le VLM Chandra (vllm, compatible OpenAI).
 
-Chaque page du PDF est convertie en image puis envoyée au VLM avec un prompt
-demandant d'extraire le tableau sous forme JSON structuré.
+Chaque page du PDF est convertie en image puis envoyée au VLM.
+Chandra retourne du HTML natif (<table>), parsé ensuite en JSON structuré.
 
 Lancement :
     uv run uvicorn main_chandra:app --host 0.0.0.0 --port 8003 --app-dir src
 
 Variables d'environnement :
-    CHANDRA_BASE_URL   URL du serveur vllm  (défaut: https://projet-models-hf-vllm.user.lab.sspcloud.fr/v1)
-    CHANDRA_MODEL      Nom du modèle        (défaut: datalab-to/chandra-ocr-2)
-    CHANDRA_API_KEY    Clé API              (défaut: "", convention vllm)
-    CHANDRA_DPI        Résolution PDF→image (défaut: 200)
+    CHANDRA_BASE_URL    URL du serveur vllm  (défaut: https://projet-models-hf-vllm.user.lab.sspcloud.fr/v1)
+    CHANDRA_MODEL       Nom du modèle        (défaut: datalab-to/chandra-ocr-2)
+    CHANDRA_API_KEY     Clé API              (défaut: EMPTY, convention vllm)
+    CHANDRA_DPI         Résolution PDF→image (défaut: 200)
+    CHANDRA_RETRIES     Tentatives par page  (défaut: 3)
+    CHANDRA_RETRY_DELAY Délai initial (s)    (défaut: 2, multiplié par le numéro de tentative)
 """
 
+import asyncio
 import base64
-import json
 import os
-import re
 import shutil
 import tempfile
+from html.parser import HTMLParser
 
 import pymupdf as fitz
 from dotenv import load_dotenv
@@ -31,27 +33,10 @@ load_dotenv()
 
 os.environ.setdefault("CHANDRA_BASE_URL", "https://projet-models-hf-vllm.user.lab.sspcloud.fr/v1")
 os.environ.setdefault("CHANDRA_MODEL", "datalab-to/chandra-ocr-2")
-os.environ.setdefault("CHANDRA_API_KEY", "")
+os.environ.setdefault("CHANDRA_API_KEY", "EMPTY")
 os.environ.setdefault("CHANDRA_DPI", "200")
-
-EXTRACTION_PROMPT = """\
-Look at this image and extract every table you can see.
-Return a JSON object with this exact structure — no markdown, no explanation, only JSON:
-{
-  "tables": [
-    {
-      "rows": [
-        ["cell_1_1", "cell_1_2", "..."],
-        ["cell_2_1", "cell_2_2", "..."]
-      ]
-    }
-  ]
-}
-Rules:
-- Include header rows as the first row(s) of each table.
-- Use empty string "" for empty cells.
-- If no table is visible, return {"tables": []}.
-"""
+os.environ.setdefault("CHANDRA_RETRIES", "5")
+os.environ.setdefault("CHANDRA_RETRY_DELAY", "2")
 
 app = FastAPI(
     title="API Chandra PDF Extraction",
@@ -66,7 +51,6 @@ app = FastAPI(
 # ── Conversion PDF → images base64 ───────────────────────────────────────────
 
 def _pdf_to_b64_images(pdf_path: str, dpi: int) -> list[str]:
-    """Convertit chaque page du PDF en image PNG encodée en base64."""
     doc = fitz.open(pdf_path)
     mat = fitz.Matrix(dpi / 72, dpi / 72)
     images = []
@@ -77,57 +61,82 @@ def _pdf_to_b64_images(pdf_path: str, dpi: int) -> list[str]:
     return images
 
 
+# ── Parsing HTML → tableaux ───────────────────────────────────────────────────
+
+class _TableParser(HTMLParser):
+    """Extrait les tableaux HTML en listes de listes de chaînes."""
+
+    def __init__(self):
+        super().__init__()
+        self.tables: list[list[list[str]]] = []
+        self._current_table: list[list[str]] | None = None
+        self._current_row: list[str] | None = None
+        self._current_cell: str | None = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "table":
+            self._current_table = []
+        elif tag in ("tr",) and self._current_table is not None:
+            self._current_row = []
+        elif tag in ("td", "th") and self._current_row is not None:
+            self._current_cell = ""
+
+    def handle_endtag(self, tag):
+        if tag == "table" and self._current_table is not None:
+            if self._current_table:
+                self.tables.append(self._current_table)
+            self._current_table = None
+        elif tag == "tr" and self._current_row is not None:
+            if self._current_row:
+                self._current_table.append(self._current_row)
+            self._current_row = None
+        elif tag in ("td", "th") and self._current_cell is not None:
+            self._current_row.append(self._current_cell.strip())
+            self._current_cell = None
+
+    def handle_data(self, data):
+        if self._current_cell is not None:
+            self._current_cell += data
+
+
+def _parse_chandra_html(content: str) -> list[list[list[str]]]:
+    parser = _TableParser()
+    parser.feed(content)
+    return parser.tables
+
+
 # ── Appel VLM ────────────────────────────────────────────────────────────────
 
 async def _extract_tables_from_image(
     client: AsyncOpenAI, b64_image: str, model: str
 ) -> list[list[list[str]]]:
-    """Envoie une image au VLM et retourne les tableaux extraits."""
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": EXTRACTION_PROMPT},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{b64_image}"},
-                    },
-                ],
-            }
-        ],
-    )
-    return _parse_vlm_response(response.choices[0].message.content or "")
+    retries = int(os.getenv("CHANDRA_RETRIES"))
+    delay = float(os.getenv("CHANDRA_RETRY_DELAY"))
+    last_exc: Exception | None = None
 
-
-def _parse_vlm_response(content: str) -> list[list[list[str]]]:
-    """
-    Parse la réponse du VLM en liste de tableaux.
-    Gère les réponses enveloppées dans des blocs markdown (```json ... ```).
-    """
-    # Supprimer les blocs markdown éventuels
-    content = re.sub(r"```(?:json)?\s*", "", content)
-    content = re.sub(r"```", "", content).strip()
-
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        # Tentative de récupération : chercher un objet JSON dans la réponse
-        match = re.search(r"\{.*\}", content, re.DOTALL)
-        if not match:
-            return []
+    for attempt in range(retries):
         try:
-            data = json.loads(match.group())
-        except json.JSONDecodeError:
-            return []
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{b64_image}"},
+                            },
+                        ],
+                    }
+                ],
+            )
+            return _parse_chandra_html(response.choices[0].message.content or "")
+        except Exception as e:
+            last_exc = e
+            if attempt < retries - 1:
+                await asyncio.sleep(delay * (attempt + 1))
 
-    tables = []
-    for t in data.get("tables", []):
-        rows = t.get("rows", [])
-        if rows:
-            tables.append([[str(cell) for cell in row] for row in rows])
-    return tables
+    raise last_exc
 
 
 # ── Endpoint /extract ─────────────────────────────────────────────────────────

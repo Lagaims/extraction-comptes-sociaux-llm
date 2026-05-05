@@ -13,6 +13,7 @@ Usage :
     uv run json_to_csv.py --method marker
     uv run json_to_csv.py --method opendataloader
     uv run json_to_csv.py --method marker_last_work
+    uv run json_to_csv.py --method chandra
     uv run json_to_csv.py --method all          (défaut)
 """
 
@@ -93,6 +94,21 @@ class MarkerTableExtractor(TableExtractor):
         return results
 
 
+def _normalize_chandra_table(table: Table) -> Table | None:
+    """
+    Nettoie un tableau Chandra :
+    - Détermine la largeur canonique sur les lignes avec ≥2 cellules non-vides.
+    - Complète toutes les lignes (y compris les lignes-labels à 1 cellule) jusqu'à
+      cette largeur, afin de conserver les en-têtes de section dans le CSV.
+    Retourne None si le tableau ne contient aucune ligne de données (≥2 cellules).
+    """
+    data_rows = [row for row in table if sum(1 for c in row if c.strip()) > 1]
+    if not data_rows:
+        return None
+    max_cols = max(len(r) for r in data_rows)
+    return [r + [""] * (max_cols - len(r)) for r in table]
+
+
 class ChandraTableExtractor(TableExtractor):
     """
     Extrait les tableaux depuis la sortie JSON de l'API Chandra.
@@ -111,7 +127,9 @@ class ChandraTableExtractor(TableExtractor):
         for page in data.get("pages", []):
             for table in page.get("tables", []):
                 if table:
-                    tables.append(table)
+                    normalized = _normalize_chandra_table(table)
+                    if normalized:
+                        tables.append(normalized)
         return tables
 
 
