@@ -8,6 +8,7 @@ avec les annotations de référence (XLSX).
 Sources CSV :
   s3://projet-extraction-tableaux/reprise/output_csv/marker/
   s3://projet-extraction-tableaux/reprise/output_csv/opendataloader/
+  s3://projet-extraction-tableaux/reprise/output_csv/chandra/
 Annotations :
   s3://projet-extraction-tableaux/annotations/clean/
 Résultats :
@@ -17,15 +18,18 @@ Métriques (type rappel, une ligne par couple fichier × méthode) :
   col_recovery      – taux de colonnes de l'annotation retrouvées
   row_recovery      – taux de lignes de l'annotation retrouvées
   numeric_recovery  – taux de cellules numériques (hors en-têtes) bien récupérées
-  total_extraction  – 1 si toutes les cellules non-vides sont matchées exactement
+  total_extraction  – 1 si structure complète (toutes colonnes/lignes matchées) et toutes
+                      les cellules numériques de la zone de données sont récupérées
+                      (tolérance : espaces dans les nombres, pourcentages décimaux/pourcentage)
 
 Usage :
-    uv run evaluation_extraction.py [--threshold 0.5]
+    uv run evaluation_extraction.py [--threshold 0.5 --cell-delta 0]
 """
 
 import io
 import re
 import argparse
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -85,7 +89,9 @@ def _load_csv(fs, path: str) -> pd.DataFrame:
 
 def _load_xlsx(fs, path: str) -> pd.DataFrame:
     with fs.open(path, "rb") as f:
-        return pd.read_excel(io.BytesIO(f.read()), header=None, dtype=str).fillna("")
+        df = pd.read_excel(io.BytesIO(f.read()), header=None, dtype=str).fillna("")
+    mask = df.apply(lambda row: row.str.strip().eq("").all(), axis=1)
+    return df[~mask].reset_index(drop=True)
 
 
 def _list_pairs(fs, pred_prefix: str) -> list[tuple[str, str, str]]:
@@ -136,7 +142,7 @@ def _list_pairs_from_correspondances(fs, pred_prefix: str) -> list[tuple[str, st
 def _is_numeric(value: str) -> bool:
     s = value.strip().replace(",", ".").replace(" ", "").replace(" ", "")
     if not s:
-        return False
+        return True
     try:
         float(s)
         return True
@@ -148,11 +154,86 @@ def _is_empty(value: str) -> bool:
     return value.strip() == ""
 
 
+_NUMERIC_PLACEHOLDERS = {
+    "-", "–", "—", "n.a.", "n/a", "nd", "n.d.", "ns", "nc", "n.c.",
+}
+_UNIT_SUFFIX_RE = re.compile(
+    r'(?i)\s*(€|eur|euros?|usd|\$|gbp|£|nok|sek|chf|jpy|¥|kr|%|pp|bps?)\s*$'
+)
+
+
+def _looks_numeric(value: str) -> bool:
+    """Variante permissive de `_is_numeric`, dédiée à la détection d'en-têtes.
+
+    Accepte en plus :
+    - parenthèses comptables : (14) → -14
+    - unités en suffixe       : 15,24 €, 344 369 NOK, 100,00%
+    - placeholders d'absence  : -, NC, ND, N/A
+    """
+    s = value.strip()
+    if not s:
+        return True
+    if s.lower() in _NUMERIC_PLACEHOLDERS:
+        return True
+    s = _UNIT_SUFFIX_RE.sub("", s).strip()
+    if s.startswith("(") and s.endswith(")"):
+        s = s[1:-1].strip()
+    s = s.replace(",", ".").replace(" ", "").replace(" ", "")
+    if not s:
+        return True
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_numeric_str(val: str) -> str:
+    """Normalise un nombre textuel pour la comparaison.
+
+    - Supprime les espaces séparateurs de milliers : '25 000' → '25000'.
+    - Convertit les pourcentages en décimales : '100%' → '1', '66,67%' → '0.6667'.
+    """
+    s = val.strip()
+    # Espaces séparateurs de milliers (normaux, insécables  ,  )
+    s = re.sub(r'(\d)[\s  ]+(\d)', r'\1\2', s)
+    # Pourcentages → décimales
+    m = re.fullmatch(r'(-?\d+(?:[,\.]\d+)?)\s*%', s)
+    if m:
+        try:
+            n = float(m.group(1).replace(',', '.')) / 100
+            s = f'{n:.6g}'
+        except ValueError:
+            pass
+    return s
+
+
+def _cell_recovered(
+    prediction: pd.DataFrame, pr: int, pc: int, val: str, delta: int, strict: bool = False
+) -> bool:
+    """Retourne True si val est trouvée dans prediction à (pr, pc±delta).
+
+    Si `strict` est False (défaut), comparaison via `_normalize_numeric_str`
+    (tolérante aux espaces séparateurs et au format des pourcentages).
+    Si `strict` est True, comparaison de chaîne brute après strip — utilisée
+    pour les cellules avec unités, parenthèses ou placeholders.
+    """
+    target = val.strip() if strict else _normalize_numeric_str(val)
+    for dc in range(-delta, delta + 1):
+        c = pc + dc
+        if 0 <= c < len(prediction.columns):
+            cand = prediction.iloc[pr, c]
+            cand_norm = cand.strip() if strict else _normalize_numeric_str(cand)
+            if cand_norm == target:
+                return True
+    return False
+
+
 def _non_numeric_rate(series: pd.Series) -> float:
     non_empty = [v for v in series if not _is_empty(v)]
     if not non_empty:
         return 1.0
-    return 1.0 - sum(1 for v in non_empty if _is_numeric(v)) / len(non_empty)
+    return 1.0 - sum(1 for v in non_empty if _looks_numeric(v)) / len(non_empty)
 
 
 # ── Étape 1 : Détection des en-têtes ─────────────────────────────────────────
@@ -162,12 +243,27 @@ def detect_column_header_height(df: pd.DataFrame) -> int:
     Nombre de lignes formant l'en-tête des colonnes.
     Intègre les lignes numériques initiales, puis les lignes majoritairement
     non-numériques (taux non-numérique >= 0.5).
+
+    Garde-fous :
+    - Si aucune ligne textuelle n'est absorbée par la phase 2, on considère qu'il
+      n'y a pas d'en-tête de colonnes (ex. tableaux filiales sans ligne d'en-tête).
+    - Si la phase 2 absorbe TOUTES les lignes restantes jusqu'à la fin (typique
+      des tableaux text-heavy où chaque ligne a `rate >= 0.5` sans pour autant
+      être un en-tête), on retombe sur les seules lignes 100% non-numériques.
     """
     n, i = len(df), 0
     while i < n and _non_numeric_rate(df.iloc[i]) < 0.5:
         i += 1
+    phase1_end = i
     while i < n and _non_numeric_rate(df.iloc[i]) >= 0.5:
         i += 1
+    if i == phase1_end:
+        return 0
+    if i == n:
+        j = phase1_end
+        while j < n and _non_numeric_rate(df.iloc[j]) >= 1.0:
+            j += 1
+        return j
     return i
 
 
@@ -175,14 +271,18 @@ def detect_row_header_width(df: pd.DataFrame) -> int:
     """
     Nombre de colonnes formant l'en-tête des lignes.
     Première colonne toujours incluse, puis les suivantes tant qu'elles
-    contiennent au moins une cellule numérique.
+    contiennent au moins une cellule numérique stricte ET sont
+    majoritairement non-numériques (taux non-numérique > 0.5).
     """
     n_cols = len(df.columns)
     if n_cols == 0:
         return 0
     width = 1
     for c in range(1, n_cols):
-        if not any(_is_numeric(v) for v in df.iloc[:, c]):
+        col = df.iloc[:, c]
+        if not any(_looks_numeric(v) and not _is_empty(v) for v in col):
+            break
+        if _non_numeric_rate(col) <= 0.5:
             break
         width += 1
     return width
@@ -287,10 +387,12 @@ def evaluate_pair(
     annotation: pd.DataFrame,
     prediction: pd.DataFrame,
     threshold: float = 0.5,
+    cell_delta: int = 0,
 ) -> dict:
     """
     Calcule les métriques de rappel pour une paire (annotation, prédiction).
     Les valeurs sont comparées en tant que chaînes de caractères (.strip()).
+    cell_delta : tolérance en nombre de colonnes (±) pour total_extraction uniquement.
     """
     ann_hrows = detect_column_header_height(annotation)
     ann_hcols = detect_row_header_width(annotation)
@@ -313,40 +415,54 @@ def evaluate_pair(
     row_recovery = len(row_match) / n_ann_rows if n_ann_rows else 0.0
 
     # Cellules numériques (zone de données, hors en-têtes)
+    # On compte toutes les cellules `_looks_numeric` (nombres purs, unités, parenthèses,
+    # placeholders). La comparaison avec la prédiction est :
+    #   - normalisée (espaces, %)   pour les nombres purs (`_is_numeric` True)
+    #   - stricte (chaîne identique) pour les cellules avec unités / parenthèses /
+    #     placeholders, où l'on évalue l'exactitude des caractères extraits
     total_num = recovered_num = 0
     for r in range(ann_hrows, n_ann_rows):
         for c in range(ann_hcols, n_ann_cols):
             val = annotation.iloc[r, c]
-            if not _is_numeric(val):
+            if not _looks_numeric(val):
                 continue
             total_num += 1
             if r in row_match and c in col_match:
                 pr, pc = row_match[r], col_match[c]
                 if pr < len(prediction) and pc < len(prediction.columns):
-                    if prediction.iloc[pr, pc].strip() == val.strip():
+                    pred_val = prediction.iloc[pr, pc]
+                    if _is_numeric(val):
+                        match = _normalize_numeric_str(pred_val) == _normalize_numeric_str(val)
+                    else:
+                        match = pred_val.strip() == val.strip()
+                    if match:
                         recovered_num += 1
 
-    numeric_recovery = recovered_num / total_num if total_num else 1.0
+    numeric_recovery = recovered_num / total_num if total_num else float("nan") # cas sans cellules 
 
-    # Indicatrice d'extraction totale
-    total_ok = True
-    for r in range(n_ann_rows):
-        if not total_ok:
-            break
-        for c in range(n_ann_cols):
-            val = annotation.iloc[r, c]
-            if _is_empty(val):
-                continue
-            if r not in row_match or c not in col_match:
-                total_ok = False
+    # Indicatrice d'extraction totale :
+    # (1) structure complète : toutes les colonnes ET lignes de l'annotation sont matchées
+    # (2) toutes les cellules numériques de la zone de données sont récupérées (normalisées)
+    total_ok = (len(col_match) == n_ann_cols and len(row_match) == n_ann_rows)
+    if total_ok:
+        for r in range(ann_hrows, n_ann_rows):
+            if not total_ok:
                 break
-            pr, pc = row_match[r], col_match[c]
-            if pr >= len(prediction) or pc >= len(prediction.columns):
-                total_ok = False
-                break
-            if prediction.iloc[pr, pc].strip() != val.strip():
-                total_ok = False
-                break
+            for c in range(ann_hcols, n_ann_cols):
+                val = annotation.iloc[r, c]
+                if not _looks_numeric(val):
+                    continue
+                if r not in row_match or c not in col_match:
+                    total_ok = False
+                    break
+                pr, pc = row_match[r], col_match[c]
+                if pr >= len(prediction) or pc >= len(prediction.columns):
+                    total_ok = False
+                    break
+                strict = not _is_numeric(val)
+                if not _cell_recovered(prediction, pr, pc, val, cell_delta, strict=strict):
+                    total_ok = False
+                    break
 
     return {
         "col_recovery": col_recovery,
@@ -364,24 +480,49 @@ def evaluate_pair(
     }
 
 
+# ── Comptage de tableaux par SIREN ────────────────────────────────────────────
+
+_BASE_STEM_RE = re.compile(r'^(.*?)_(\d+)$')
+
+
+def _base_stem(name: str) -> str:
+    """Retire le suffixe _N d'un nom de fichier pour obtenir l'identifiant SIREN."""
+    m = _BASE_STEM_RE.match(name)
+    return m.group(1) if m else name
+
+
+def _count_per_base(fs, prefix: str, ext: str) -> Counter:
+    """Compte le nombre de fichiers par SIREN (base_stem) dans un dossier S3."""
+    stems = [Path(p).stem for p in fs.glob(f"{prefix}/*{ext}")]
+    return Counter(_base_stem(s) for s in stems)
+
+
 # ── Évaluation par lot ────────────────────────────────────────────────────────
 
-def evaluate_dataset(threshold: float = 0.5) -> pd.DataFrame:
+def evaluate_dataset(threshold: float = 0.5, cell_delta: int = 0) -> pd.DataFrame:
     fs = get_s3_fs()
     all_results: list[dict] = []
+
+    ann_counts_default = _count_per_base(fs, S3_ANNOTATIONS, ".xlsx")
 
     for method, pred_prefix in METHODS.items():
         if method == "marker_last_work":
             pairs = _list_pairs_from_correspondances(fs, pred_prefix)
+            correspondances = _load_correspondances(fs)
+            ann_counts = Counter({siren: len(paths) for siren, paths in correspondances.items()})
         else:
             pairs = _list_pairs(fs, pred_prefix)
+            ann_counts = ann_counts_default
         print(f"\n[{method}] {len(pairs)} paire(s) trouvée(s)")
 
+        pred_counts = _count_per_base(fs, pred_prefix, ".csv")
+
         for name, ann_path, pred_path in pairs:
+            base = _base_stem(name)
             try:
                 ann_df = _load_xlsx(fs, ann_path)
                 pred_df = _load_csv(fs, pred_path)
-                metrics = evaluate_pair(ann_df, pred_df, threshold=threshold)
+                metrics = evaluate_pair(ann_df, pred_df, threshold=threshold, cell_delta=cell_delta)
                 metrics.update({"fichier": name, "methode": method})
                 print(
                     f"  {name:<30} "
@@ -400,6 +541,8 @@ def evaluate_dataset(threshold: float = 0.5) -> pd.DataFrame:
                     "numeric_recovery": None,
                     "total_extraction": None,
                 }
+            metrics["n_ann_tables"] = ann_counts.get(base, 0)
+            metrics["n_pred_tables"] = pred_counts.get(base, 0)
             all_results.append(metrics)
 
     df = pd.DataFrame(all_results)
@@ -424,6 +567,17 @@ def _print_summary(df: pd.DataFrame) -> None:
         for col in metric_cols:
             print(f"    {col:<25}: {sub[col].dropna().mean():.4f}")
 
+        if "n_ann_tables" in sub.columns and "n_pred_tables" in sub.columns:
+            siren_df = sub.copy()
+            siren_df["_siren"] = siren_df["fichier"].apply(_base_stem)
+            siren_df = siren_df.drop_duplicates("_siren")
+            n_total = len(siren_df)
+            n_match = (siren_df["n_pred_tables"] == siren_df["n_ann_tables"]).sum()
+            print(f"    {'---':<25}")
+            print(f"    {'table_count_accuracy':<25}: {n_match / n_total:.4f}  ({n_match}/{n_total} SIREN)")
+            print(f"    {'moy. tableaux annotés':<25}: {siren_df['n_ann_tables'].mean():.2f}")
+            print(f"    {'moy. tableaux détectés':<25}: {siren_df['n_pred_tables'].mean():.2f}")
+
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -433,5 +587,9 @@ if __name__ == "__main__":
         "--threshold", type=float, default=0.5,
         help="Seuil de similarité Levenshtein pour le matching (défaut : 0.5)",
     )
+    parser.add_argument(
+        "--cell-delta", type=int, default=0,
+        help="Tolérance en colonnes (±) pour numeric_recovery et total_extraction (défaut : 0)",
+    )
     args = parser.parse_args()
-    evaluate_dataset(threshold=args.threshold)
+    evaluate_dataset(threshold=args.threshold, cell_delta=args.cell_delta)
