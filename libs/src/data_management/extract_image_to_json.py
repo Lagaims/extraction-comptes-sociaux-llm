@@ -40,10 +40,10 @@ def extract_pdf(pdf_path: str, tmpdir: str, artifact_dict: dict) -> dict:
     config = {
         "output_format": "json",
         "force_ocr": True,
-        "use_llm": False, # Premier test sans l'utilisation d'un LLM
+        "use_llm": True,
         "llm_service": "marker.services.openai.OpenAIService",
         "openai_base_url": os.getenv("PROXY_URL"),
-        "openai_model": "gemma4-31b",
+        "openai_model": "gemma4-26b-moe",
         "openai_api_key": os.getenv("REAL_LLM_API_KEY"),
         "timeout": 99999,
         # --- parallélisme intra-document ---
