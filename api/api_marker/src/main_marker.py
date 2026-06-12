@@ -6,7 +6,13 @@ import shutil
 import tempfile
 import threading
 
+# Réduit la fragmentation de l'allocateur CUDA entre requêtes : sur un run long, la VRAM
+# réservée se fragmente et une page dense peut OOM faute de bloc contigu, alors qu'elle
+# tiendrait à froid. À définir AVANT toute initialisation du contexte CUDA (import torch).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 from dotenv import load_dotenv
+import torch
 from data_management.extract_image_to_json import extract_pdf, load_models, PdfConversionError, MarkerConversionError
 
 load_dotenv()
@@ -56,7 +62,13 @@ def extract(pdf: UploadFile = File(...)):
 
         try:
             with gpu_lock:
-                result = extract_pdf(input_pdf_path, tmpdir, artifact_dict)
+                try:
+                    result = extract_pdf(input_pdf_path, tmpdir, artifact_dict)
+                finally:
+                    # Libère la VRAM réservée non utilisée entre deux PDFs pour limiter
+                    # la fragmentation (cause d'OOM sur une page dense après plusieurs pages).
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
         except PdfConversionError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except MarkerConversionError as e:

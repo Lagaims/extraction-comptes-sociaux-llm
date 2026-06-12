@@ -1,12 +1,30 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 import openai as openai_errors
-import json
 import os
+import re
 from dotenv import load_dotenv
 import logging
 
 load_dotenv()
+
+# Le modèle distant n'honore pas les structured outputs stricts : on convertit le
+# json_schema en json_object (cf. plus bas), et le modèle répond souvent en JSON
+# emballé dans un bloc markdown ```json … ```. marker (.parse()) attend du JSON brut
+# et échoue sur les balises. On dé-emballe donc le premier bloc fencé de la réponse.
+_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*\n?(.*?)```", re.DOTALL)
+
+
+def _unwrap_json(content):
+    """Extrait le JSON d'un éventuel bloc markdown ```json … ``` (sinon renvoie tel quel)."""
+    if not isinstance(content, str):
+        return content
+    stripped = content.strip()
+    match = _FENCE_RE.search(stripped)
+    if match:
+        return match.group(1).strip()
+    return stripped
+
 
 os.environ.setdefault("REAL_LLM_BASE_URL", "https://llm.lab.sspcloud.fr/v1")
 
@@ -61,6 +79,10 @@ async def chat_completions(request: Request):
     model = data.get("model", "unknown")
     logger.info(f"→ /v1/chat/completions  model={model}")
 
+    # On retient si une réponse JSON est attendue (pour dé-emballer le JSON fencé renvoyé).
+    rf = data.get("response_format")
+    expects_json = isinstance(rf, dict) and rf.get("type") in ("json_schema", "json_object")
+
     # json_schema (structured outputs) non supporté par tous les LLMs :
     # on convertit en json_object et on injecte le schéma dans le prompt
     if isinstance(data.get("response_format"), dict) and data["response_format"].get("type") == "json_schema":
@@ -86,8 +108,15 @@ async def chat_completions(request: Request):
 
     try:
         response = await client.chat.completions.create(**data)
+        payload = response.model_dump()
+        # Dé-emballe le JSON fencé markdown pour que marker (.parse()) puisse le parser.
+        if expects_json:
+            for choice in payload.get("choices", []):
+                message = choice.get("message") or {}
+                if isinstance(message.get("content"), str):
+                    message["content"] = _unwrap_json(message["content"])
         logger.info(f"← /v1/chat/completions  model={model}  OK")
-        return response.model_dump()
+        return payload
     except openai_errors.APIStatusError as e:
         logger.error(f"LLM error {e.status_code}: {e.message}")
         raise HTTPException(status_code=e.status_code, detail=e.message)

@@ -514,7 +514,7 @@ wheels = [
 [[package]]
 name = "extraction-common"
 version = "0.1.0"
-source = { directory = "../libs" }
+source = { editable = "../libs" }
 dependencies = [
     { name = "python-dotenv" },
     { name = "s3fs" },
@@ -2138,7 +2138,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "extraction-common", directory = "../libs" },
+    { name = "extraction-common", editable = "../libs" },
     { name = "langfuse", specifier = ">=4.5.1" },
     { name = "marker-pdf", specifier = ">=1.10.2" },
     { name = "openpyxl", specifier = ">=3.1.0" },

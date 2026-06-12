@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import traceback
 
 import torch
 
@@ -26,6 +27,24 @@ def load_models() -> dict:
     return create_model_dict()
 
 
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """Détecte un OOM CUDA, y compris emballé dans une exception générique.
+
+    surya/marker rattrape parfois l'OOM et le relève en RuntimeError « ordinaire », donc
+    un simple `isinstance(exc, torch.cuda.OutOfMemoryError)` ne suffit pas : on remonte la
+    chaîne __cause__/__context__ et on cherche aussi la signature dans le message.
+    """
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, torch.cuda.OutOfMemoryError):
+            return True
+        if "out of memory" in str(exc).lower():
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def extract_pdf(pdf_path: str, tmpdir: str, artifact_dict: dict) -> dict:
     """Logique métier d'extraction, indépendante de FastAPI."""
 
@@ -44,18 +63,25 @@ def extract_pdf(pdf_path: str, tmpdir: str, artifact_dict: dict) -> dict:
 
     # Batch sizes selon le device.
     # NB : le LLM (use_llm) est déporté sur le marker_proxy (PROXY_URL), donc le GPU
-    # local ne sert qu'aux modèles surya -> on a de la marge VRAM sur les 16 Go d'une T4.
+    # local ne sert qu'aux modèles surya -> on a de la marge VRAM sur les 16 Go de l'A2.
     if use_gpu:
-        # Réglages pour une T4 16 Go (modèles surya uniquement en local).
-        # Calibré au-dessus des défauts CUDA de surya (recognition 256 / detection 32)
-        # car le LLM est déporté sur le proxy : la VRAM est quasi entièrement libre.
-        # À ajuster en surveillant `nvidia-smi` (cible ~11-12 Go / 15 Go).
+        # Réglages conservateurs pour NVIDIA A2 16 Go (14,61 Go utilisables), modèles surya
+        # uniquement en local (le LLM est déporté sur le marker_proxy).
+        #
+        # IMPORTANT : la VRAM ne dépend pas que du batch, mais aussi de la TAILLE des images.
+        # Sur de vrais scans de comptes sociaux (grandes images haute résolution), chaque crop
+        # de ligne est lourd : un batch 96 a saturé les 14,61 Go (OOM, 14,42 Go alloués par
+        # PyTorch) sur une page de ~200 lignes. On revient donc à une valeur conservatrice qui
+        # tient sur les pages denses réelles, quitte à perdre un peu de débit (la correction
+        # OCR reste massivement plus rapide qu'en CPU).
+        # En cas d'OOM, le serveur loggue l'état VRAM : baisser encore recognition (24, 16) ;
+        # s'il reste de la marge sur tes documents, on peut remonter prudemment vers 48.
         batch_sizes = {
-            "detection_batch_size": 36,
-            "recognition_batch_size": 224,
-            "layout_batch_size": 24,
-            "table_rec_batch_size": 28,
-            "equation_batch_size": 16,
+            "detection_batch_size": 6,
+            "recognition_batch_size": 32,
+            "layout_batch_size": 6,
+            "table_rec_batch_size": 6,
+            "equation_batch_size": 4,
         }
     else:
         # Réglages conservateurs pour CPU
@@ -102,6 +128,26 @@ def extract_pdf(pdf_path: str, tmpdir: str, artifact_dict: dict) -> dict:
     try:
         rendered = converter(pdf_path)
     except Exception as e:
+        # On loggue la stack complète côté serveur : l'endpoint ne renvoie que str(e)
+        # dans la réponse HTTP 500 et uvicorn ne trace pas les HTTPException.
+        traceback.print_exc()
+
+        # surya/marker emballe l'OOM CUDA dans une exception générique (RuntimeError),
+        # donc `except torch.cuda.OutOfMemoryError` ne suffit pas : on inspecte le message
+        # et toute la chaîne de causes pour détecter l'OOM de façon robuste.
+        if _is_cuda_oom(e):
+            mem = (
+                f"VRAM: {torch.cuda.memory_allocated()/1e9:.2f} Go alloc / "
+                f"{torch.cuda.max_memory_reserved()/1e9:.2f} Go pic reserved / "
+                f"{torch.cuda.get_device_properties(0).total_memory/1e9:.2f} Go total"
+            )
+            # Libère la VRAM pour que la requête suivante reparte sur un allocateur sain.
+            torch.cuda.empty_cache()
+            raise MarkerConversionError(
+                f"OOM GPU pendant l'OCR ({mem}). Baisser recognition_batch_size "
+                f"(et les autres *_batch_size à proportion) dans extract_image_to_json.py."
+            ) from e
+
         raise MarkerConversionError(f"Marker conversion failed: {e}") from e
 
     elapsed = time.time() - start

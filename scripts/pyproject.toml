@@ -16,4 +16,6 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-extraction-common = { path = "../libs" }
+# editable = true : sinon les modifs de libs/src/** ne sont pas prises en compte sans
+# `uv sync` (uv installe une copie figée par défaut). Voir api/api_marker/pyproject.toml.
+extraction-common = { path = "../libs", editable = true }
