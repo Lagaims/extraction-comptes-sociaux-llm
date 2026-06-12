@@ -1,0 +1,14 @@
+[project]
+name = "api-chandra"
+version = "0.1.0"
+description = "API d'extraction de tableaux via le VLM Chandra"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.136.0",
+    "openai>=1.0.0",
+    "pillow>=10.4.0",
+    "pymupdf>=1.27.2.2",
+    "python-dotenv>=1.2.2",
+    "python-multipart>=0.0.26",
+    "uvicorn[standard]>=0.45.0",
+]

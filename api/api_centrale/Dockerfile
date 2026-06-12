@@ -1,7 +1,5 @@
 FROM python:3.11-slim
 
-WORKDIR /app
-
 # Installation des dépendances système nécessaires
 RUN apt-get update && apt-get install -y \
     gcc \
@@ -9,18 +7,23 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Mise à jour de pip
 RUN pip install --upgrade pip
 
+# Reproduction de la structure du repo pour que les chemins relatifs (../../libs) fonctionnent
+WORKDIR /repo
+COPY libs/ ./libs/
+COPY api/api_centrale/requirements.txt ./api/api_centrale/
+
+WORKDIR /repo/api/api_centrale
+
 # Installation des dépendances Python
-COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Vérification que les modules sont bien installés
 RUN python -c "import requests, fastapi, uvicorn, dotenv, fitz, s3fs, PyPDF2; print('All modules imported successfully')"
 
 # Copie du code source
-COPY . .
+COPY api/api_centrale/ .
 
 # Exposition du port
 EXPOSE 8000

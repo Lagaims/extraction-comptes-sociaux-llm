@@ -1,0 +1,21 @@
+[project]
+name = "scripts"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "extraction-common",
+    "pymupdf>=1.24.0",
+    "marker-pdf>=1.10.2",
+    "pandas>=3.0.2",
+    "pyarrow>=24.0.0",
+    "requests>=2.33.1",
+    "langfuse>=4.5.1",
+    "openpyxl>=3.1.0",
+]
+
+[tool.uv.sources]
+# editable = true : sinon les modifs de libs/src/** ne sont pas prises en compte sans
+# `uv sync` (uv installe une copie figée par défaut). Voir api/api_marker/pyproject.toml.
+extraction-common = { path = "../libs", editable = true }

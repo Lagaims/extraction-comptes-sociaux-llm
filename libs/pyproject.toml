@@ -1,0 +1,16 @@
+[project]
+name = "extraction-common"
+version = "0.1.0"
+description = "Utilitaires partagés entre les services de extraction-comptes-sociaux-llm"
+requires-python = ">=3.11"
+dependencies = [
+    "python-dotenv>=1.2.2",
+    "s3fs>=2025.3.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/extraction_common", "src/data_management"]

@@ -16,11 +16,17 @@ jobs:
       matrix:
         app:
           - name: api_centrale
-            context: api_centrale
+            context: .
+            dockerfile: api/api_centrale/Dockerfile
           - name: api_marker
-            context: api_marker
+            context: .
+            dockerfile: api/api_marker/Dockerfile
           - name: marker_proxy
-            context: marker_proxy
+            context: .
+            dockerfile: api/marker_proxy/Dockerfile
+          - name: api_opendataloader
+            context: .
+            dockerfile: api/api_opendataloader/Dockerfile
 
     steps:
       - name: Checkout repository
@@ -68,7 +74,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.app.context }}
-          file: ${{ matrix.app.context }}/Dockerfile
+          file: ${{ matrix.app.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |

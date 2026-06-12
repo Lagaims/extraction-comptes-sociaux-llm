@@ -11,6 +11,8 @@ import s3fs
 from PyPDF2 import PdfReader, PdfWriter
 from io import BytesIO
 
+from extraction_common.s3 import get_s3_fs
+
 # Charger .env
 load_dotenv()
 
@@ -21,19 +23,13 @@ INPI_LOGIN_URL = "https://registre-national-entreprises.inpi.fr/api/sso/login"
 INPI_ATTACHMENTS_URL = "https://registre-national-entreprises.inpi.fr/api/companies/{siren}/attachments"
 INPI_DOWNLOAD_URL = "https://registre-national-entreprises.inpi.fr/api/bilans/{identifier}/download"
 
-# S3 via s3fs (variables d'environnement requises)
 AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_SESSION_TOKEN = os.getenv("AWS_SESSION_TOKEN")
-AWS_S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT")  # ex: "minio.lab.sspcloud.fr"
 
 # Vérifications
 if not INPI_USERNAME or not INPI_PASSWORD:
     raise RuntimeError("Vous devez définir INPI_USERNAME et INPI_PASSWORD dans le .env")
-if not AWS_S3_BUCKET or not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY:
-    raise RuntimeError("Vous devez définir AWS_S3_BUCKET, AWS_ACCESS_KEY_ID et AWS_SECRET_ACCESS_KEY")
+if not AWS_S3_BUCKET:
+    raise RuntimeError("Vous devez définir AWS_S3_BUCKET")
 
 app = FastAPI(
     title="API Centrale PDF→Marker (INPI)",
@@ -85,20 +81,6 @@ def get_inpi_token() -> str:
 
 # Helpers S3
 
-def get_s3_fs() -> s3fs.S3FileSystem:
-    endpoint = AWS_S3_ENDPOINT or None
-    if endpoint and not endpoint.startswith(('http://', 'https://')):
-        endpoint = f"https://{endpoint}"
-    fs = s3fs.S3FileSystem(
-        key=AWS_ACCESS_KEY_ID,
-        secret=AWS_SECRET_ACCESS_KEY,
-        token=AWS_SESSION_TOKEN,
-        client_kwargs={
-            "endpoint_url": endpoint,
-            "region_name": AWS_REGION
-        }
-    )
-    return fs
 
 def file_exists_s3(fs: s3fs.S3FileSystem, filename: str) -> bool:
     return fs.exists(f"{AWS_S3_BUCKET}/{filename}")

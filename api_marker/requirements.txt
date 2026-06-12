@@ -1,6 +1,0 @@
-python-multipart
-python-dotenv
-marker-pdf
-PyPDF2
-PyMuPDF
-Pillow

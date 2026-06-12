@@ -1,165 +1,286 @@
-## WIP
+# extraction-comptes-sociaux-llm
 
-# README.md - Extraction Comptes Sociaux LLM
+Extraction automatique de tableaux depuis des PDFs (comptes sociaux) via OCR et LLM.
 
-## 1. Vue d'ensemble
-
-Un projet expérimental visant à automatiser l'extraction de tableaux à partir de documents PDF, notamment dans les comptes sociaux d'entreprises.
-
-Le projet met en œuvre une architecture de microservices conteneurisés et orchestrés par Kubernetes. Il combine des appels à des API externes (INPI), le traitement de PDF, et l'utilisation de modèles de langage (LLM) pour l'analyse et l'extraction de données.
-
-## 2. Architecture
-
-Le système est composé de trois services principaux qui communiquent entre eux :
-
-1.  **API Centrale (`api_centrale`)**: C'est le point d'entrée principal de l'application. Elle orchestre le workflow :
-    *   Récupère les documents PDF depuis l'API de l'INPI à partir d'un SIREN et d'une année.
-    *   Fait appel à un service externe pour sélectionner la page la plus pertinente du document.
-    *   Extrait cette page unique.
-    *   Envoie la page extraite à l'**API Marker** pour l'analyse.
-    *   (Optionnel) Sauvegarde les résultats au format JSON dans un bucket S3.
-
-2.  **API Marker (`api_marker`)**: Ce service encapsule la bibliothèque `marker-pdf`. Son rôle est de traiter un fichier PDF d'une seule page pour en extraire le contenu sous forme structurée.
-    *   Il reçoit un PDF, le convertit en image pour analyse.
-    *   Il utilise `marker-pdf` configuré pour forcer l'OCR et faire appel à un LLM via un proxy.
-    *   Il retourne le contenu du PDF au format JSON.
-
-3.  **Proxy Marker (`marker_proxy`)**: Un proxy intelligent placé devant l'API du LLM.
-    *   Il intercepte les requêtes de l'API Marker vers le LLM.
-    *   Il ajoute une couche d'observabilité en traçant les requêtes et les réponses avec Langfuse.
-    *   Il transfère ensuite la requête à l'API du LLM réel et retourne la réponse.
-
-## 3. Description des Composants
-
-### `api_centrale/`
-
-*   **Rôle** : Orchestrateur du processus d'extraction.
-*   **Framework** : FastAPI.
-*   **Dépendances notables** : `fastapi`, `requests`, `PyMuPDF`, `s3fs`.
-
-### `api_marker/`
-
-*   **Rôle** : Wrapper spécialisé pour `marker-pdf`.
-*   **Framework** : FastAPI.
-*   **Dépendances notables** : `marker-pdf`, `fastapi`, `PyMuPDF`, `Pillow`.
-
-### `marker_proxy/`
-
-*   **Rôle** : Proxy d'observabilité pour les appels LLM.
-*   **Framework** : FastAPI.
-*   **Dépendances notables** : `fastapi`, `httpx`, `langfuse`.
-
-### `kubernetes/`
-
-Ce répertoire contient tous les manifestes nécessaires pour déployer l'infrastructure sur un cluster Kubernetes (`Deployment`, `Service`, `Ingress`).
-
-### `legacy/`
-
-Contient des scripts et des expérimentations des phases antérieures du projet, utiles pour comprendre l'historique et pour des tests locaux.
-
-### `.github/workflows/`
-
-Définit le pipeline de CI/CD avec GitHub Actions pour construire et publier automatiquement les images Docker des trois services sur Docker Hub.
+Le pipeline repose sur [marker-pdf](https://github.com/datalab-to/marker) (OCR neuronal via [Surya](https://github.com/datalab-to/surya)) complété par un LLM pour la correction et la structuration des tableaux.
 
 ---
 
-## 4. Déploiement
+## Architecture
 
-### Prérequis
+```
+extraction-comptes-sociaux-llm/
+│
+├── api/                                  ← les services (FastAPI), un dossier = une image Docker
+│   │
+│   ├── api_centrale/         (port 8000) ← orchestration amont : récupère le PDF du bilan
+│   │   │                                   depuis l'API INPI (par SIREN + année), sélectionne
+│   │   │                                   et extrait la page utile, dépose le résultat sur S3
+│   │   ├── main_centrale.py              ← routes /extract/{siren}, /files
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt              ← dépendances (pip, pas uv)
+│   │   └── README.md
+│   │
+│   ├── marker_proxy/         (port 1324) ← proxy LLM : relaie les appels OpenAI vers le LLM
+│   │   │                                   distant, ajoute le tracing Langfuse, et adapte les
+│   │   │                                   réponses (json_schema → json_object, dé-emballage JSON)
+│   │   ├── src/proxy.py
+│   │   ├── pyproject.toml / uv.lock
+│   │   └── Dockerfile
+│   │
+│   ├── api_marker/           (port 8001) ← OCR + structuration JSON via marker-pdf   ⚠ GPU
+│   │   │                                   appelle marker_proxy pour la correction LLM
+│   │   ├── src/main_marker.py            ← endpoint /extract (charge les modèles au démarrage)
+│   │   ├── pyproject.toml / uv.lock      ← torch épinglé cu128 (cf. section GPU)
+│   │   └── Dockerfile
+│   │
+│   ├── api_opendataloader/   (port 8002) ← extraction alternative (Java/OpenDataLoader),
+│   │   │                                   renvoie du HTML ; sert de comparatif à marker
+│   │   ├── src/main_opendataloader.py
+│   │   ├── requirements.txt
+│   │   └── Dockerfile
+│   │
+│   └── api_chandra/          (port 8003) ← extraction via le VLM Chandra (vllm) : chaque page
+│       │                                   est envoyée en image, Chandra renvoie du HTML <table>
+│       ├── src/main_chandra.py            ← parsé ensuite en JSON
+│       └── pyproject.toml / uv.lock
+│
+├── libs/                                 ← package partagé `extraction-common` (installé éditable)
+│   ├── pyproject.toml
+│   └── src/
+│       ├── extraction_common/
+│       │   └── s3.py                     ← `get_s3_fs()` : client S3 (MinIO/AWS) depuis l'env
+│       └── data_management/              ← logique marker
+│           ├── extract_image_to_json.py  ← config marker, device GPU/CPU, batch sizes, gestion OOM
+│           └── pdf_to_image.py           ← conversion PDF → image (PyMuPDF)
+│
+├── scripts/                              ← orchestration & évaluation (lancés en local via uv)
+│   ├── extraction_pdf_via_api.py         ← pilote : lit les PDFs sur S3 → API → écrit le JSON sur S3
+│   ├── json_to_csv.py                    ← convertit les JSON de sortie (marker/ODL) en CSV sur S3
+│   ├── comparaison_pdf_csv.py            ← apparie PDFs et annotations XLSX de référence
+│   ├── evaluation_extraction.py          ← compare CSV prédits vs annotations XLSX (métriques)
+│   └── pyproject.toml / uv.lock
+│
+├── kubernetes/                           ← déploiement SSP Cloud (namespace projet-extraction-tableaux)
+│   ├── deployment-*.yaml                 ← api-centrale, api-marker, marker-proxy
+│   ├── service-*.yaml / ingress-*.yaml
+│   └── deploy.sh                         ← applique les manifests + crée le secret `app-env` depuis .env
+│
+├── .github/workflows/
+│   └── image-build.yml                   ← CI : build & push des images Docker (api_centrale,
+│                                            api_marker, marker_proxy, api_opendataloader)
+│
+├── legacy/                               ← anciens scripts/PoC (marker_single CLI, vllm batch…),
+│                                            conservés pour référence, hors pipeline actuel
+│
+├── .env                                  ← configuration locale (cf. section Configuration)
+└── README.md
+```
 
-*   Un accès à un cluster Kubernetes avec `kubectl` configuré.
-*   Un Ingress Controller (ex: Nginx) installé sur le cluster.
-*   Un fichier `.env` contenant toutes les variables d'environnement nécessaires.
+### Flux principal
 
-### Variables d'environnement
+```
+api_centrale ──(PDF page bilan → S3)──>  scripts/extraction_pdf_via_api.py
+                                                  │  POST /extract (PDF)
+                                                  ▼
+                                            api_marker  ──(appels LLM)──>  marker_proxy ──> LLM distant
+                                          (OCR Surya, GPU)                 (+ Langfuse)
+                                                  │  JSON structuré → S3
+                                                  ▼
+                                          scripts/json_to_csv.py ──> scripts/evaluation_extraction.py
+```
 
-Créez un fichier `.env` à la racine du projet en vous basant sur l'exemple suivant. Remplissez les valeurs vides avec vos propres informations d'identification.
+`api_marker` et `marker_proxy` fonctionnent en tandem : `api_marker` fait tourner l'OCR neuronal (Surya) en local sur GPU et appelle `marker_proxy` pour la correction LLM des tableaux ; le proxy relaie vers le LLM distant en ajoutant le tracing Langfuse. `api_opendataloader` et `api_chandra` sont des moteurs d'extraction alternatifs, comparés à marker via le pipeline d'évaluation.
 
-```bash
-# Configuration S3 (pour api_centrale)
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
-AWS_SESSION_TOKEN=
+---
+
+## Prérequis
+
+- **Python 3.13** (géré par `uv`)
+- **[uv](https://docs.astral.sh/uv/)** (`pip install uv` ou `curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- **GPU NVIDIA avec ≥ 16 Go de VRAM** — voir [section GPU](#gpu--performances) ci-dessous
+- Accès S3 (MinIO SSP Cloud ou AWS)
+- Accès à un LLM compatible OpenAI (ex. `https://llm.lab.sspcloud.fr`)
+
+---
+
+## Configuration
+
+Copier `.env.example` en `.env` à la racine (ou exporter les variables dans le shell) :
+
+```dotenv
+# LLM distant (utilisé par marker_proxy)
+REAL_LLM_BASE_URL=https://llm.lab.sspcloud.fr/api
+REAL_LLM_API_KEY=<votre-clé>
+
+# Proxy marker (utilisé par api_marker pour joindre marker_proxy)
+# Défaut : http://localhost:1324/v1 — ne pas changer en local
+PROXY_URL=http://localhost:1324/v1
+
+# S3
+AWS_S3_BUCKET=<nom-bucket>
+AWS_ACCESS_KEY_ID=<votre-clé>
+AWS_SECRET_ACCESS_KEY=<votre-secret>
+AWS_SESSION_TOKEN=          # optionnel
+AWS_S3_ENDPOINT=<nom-endpoint>
 AWS_REGION=us-east-1
-AWS_S3_BUCKET=
-AWS_S3_ENDPOINT=minio.lab.sspcloud.fr
 
-# Accès INPI (pour api_centrale)
-INPI_USERNAME=
-INPI_PASSWORD=
-
-# Endpoints des services
-LEGACY_SELECTOR_URL=http://extraction-cs.lab.sspcloud.fr/select_page
-MARKER_API_URL=http://extraction-tableau-marker.lab.sspcloud.fr/ # Note: URL interne au cluster
-PROXY_URL=http://marker-proxy/v1/ # Note: URL interne au cluster
-
-# Configuration du LLM (pour marker_proxy)
-REAL_LLM_BASE_URL=https://llm.lab.sspcloud.fr/api/chat/completions
-REAL_LLM_API_KEY=
-
-# Configuration Langfuse (pour marker_proxy)
-LANGFUSE_HOST=https://langfuse.lab.sspcloud.fr
+# Langfuse (optionnel, désactivé si absent)
 LANGFUSE_PUBLIC_KEY=
 LANGFUSE_SECRET_KEY=
+LANGFUSE_HOST=https://langfuse.lab.sspcloud.fr
 ```
-
-### Étapes de déploiement
-
-1.  **Créer le Secret Kubernetes**
-    Assurez-vous que votre fichier `.env` est complet, puis exécutez la commande suivante pour créer ou mettre à jour la configuration dans le cluster :
-    ```sh
-    kubectl delete secret app-env -n projet-extraction-tableaux --ignore-not-found
-    kubectl create secret generic app-env \
-      --from-env-file=./.env \
-      --namespace=projet-extraction-tableaux
-    ```
-
-2.  **Appliquer les manifestes Kubernetes**
-    Cette commande déploie ou met à jour tous les composants de l'application (déploiements, services, et routes d'accès) :
-    ```sh
-    kubectl apply -f kubernetes/ --namespace=projet-extraction-tableaux
-    ```
 
 ---
 
-## 5. Utilisation
+## Démarrage local
 
-Une fois l'application déployée, vous pouvez interroger le point d'entrée principal de `api-centrale`.
+Les deux services doivent être lancés **avant** d'exécuter le script d'extraction.
 
-**Exemple avec `curl`** :
+### 1. marker_proxy (port 1324)
 
-```sh
-curl -X GET "http://extraction-tableau-centrale.lab.sspcloud.fr/extract/552032534?year=2022"
+```bash
+cd api/marker_proxy
+uv run python -m uvicorn proxy:app --host 0.0.0.0 --port 1324 --app-dir src
 ```
 
-*   **`siren`** (552032534) : Le SIREN de l'entreprise.
-*   **`year`** (2022) : L'année des comptes sociaux à extraire.
+Vérification : `curl http://localhost:1324/health`
 
-La réponse attendue est un objet JSON contenant les informations de la requête et le résultat de l'extraction.
+### 2. api_marker (port 8001)
 
-```json
-{
-  "siren": "552032534",
-  "year": "2022",
-  "page": 15,
-  "marker": {
-    // Contenu JSON complet et structuré retourné par la bibliothèque marker-pdf.
-    // La structure exacte (présence de tableaux, paragraphes, etc.)
-    // dépend du document analysé.
-  }
+```bash
+cd api/api_marker
+uv run python -m uvicorn main_marker:app --host 0.0.0.0 --port 8001 --app-dir src
+```
+
+> **Note :** le démarrage charge tous les modèles Surya en mémoire (~3,5 Go de VRAM). Il peut prendre 1–2 minutes la première fois (téléchargement des poids depuis S3).
+
+### 3. Script d'extraction
+
+```bash
+cd scripts
+
+# Traiter tous les PDFs du fichier de correspondances (avec skip automatique des déjà traités)
+uv run extraction_pdf_via_api.py --from-parquet
+
+# Tester sur un PDF spécifique
+uv run extraction_pdf_via_api.py --pdf-key dossier/fichier.pdf
+
+# Lister les PDFs disponibles dans S3
+uv run extraction_pdf_via_api.py --list
+```
+
+---
+
+## GPU & Performances
+
+### Pourquoi un GPU est indispensable
+
+`api_marker` utilise les modèles Surya (transformers autorégessifs ~720 M de paramètres).  
+Sans GPU, l'inférence OCR est **10 à 50 fois plus lente** qu'avec CUDA.
+
+| Matériel | Vitesse (ordre de grandeur) |
+|---|---|
+| GPU 16 Go VRAM (ex. A10, RTX 4080) | ~30–60 s / page |
+| CPU seul (même 64+ cœurs) | 10–30 min / page |
+
+### Empreinte mémoire GPU (VRAM)
+
+Les modèles sont tous chargés au démarrage de `api_marker` et restent en VRAM :
+
+| Modèle | Dtype | VRAM |
+|---|---|---|
+| Foundation — recognition (719 M params) | bfloat16 | 1,44 Go |
+| Foundation — layout (723 M params) | bfloat16 | 1,45 Go |
+| OCR error detection | float16 | 0,27 Go |
+| Table recognition | float16 | 0,21 Go |
+| Text detection | float16 | 0,08 Go |
+| **Total statique** | | **~3,5 Go** |
+
+Pendant l'inférence OCR (KV cache + activations). Mesures sur **NVIDIA A2 16 Go**
+(15,36 Go utilisables), LLM déporté sur le proxy, `force_ocr` activé, **sur des PDF de test
+synthétiques** (pages peu denses, petites images) :
+
+| `recognition_batch_size` | VRAM pic (reserved) | % de 15,36 Go | Marge |
+|---|---|---|---|
+| **32 (config actuelle)** | non mesuré sur synthétique | — | choisi pour tenir sur de **vrais scans** |
+| 96 | ~10,9 Go | 71 % | ~4,5 Go sur synthétique, mais **OOM sur vrais scans** |
+| 128 | ~13,3 Go | 86 % | ~2 Go |
+| 160 / 224 | ~14,2 Go | 93 % | ~1 Go — OOM |
+
+⚠️ Ces chiffres sont **optimistes** : ils viennent de PDF synthétiques. Sur de vrais scans
+de comptes sociaux, un batch 96 a saturé les 14,6 Go (OOM) — d'où le repli à **32**. Au-delà
+de ~160 le débit ne progresse plus de toute façon (le nombre de lignes par page plafonne le
+batch effectif), donc monter le batch ne fait que rogner la marge sans gain de vitesse.
+
+**La VRAM ne dépend pas que du batch, mais aussi de la taille des images** : sur de grandes
+images haute résolution, chaque crop de ligne est plus lourd, ce qui explique l'OOM à 96 sur
+de vrais scans alors que les pages synthétiques (plus petites) tenaient à 11-12 Go.
+
+**Règle : sur un GPU 16 Go traitant de vrais scans, garder `recognition_batch_size` ≤ 32**
+(config actuelle). Les chiffres du tableau ci-dessus (PDF synthétiques) sont des planchers
+optimistes — sur tes documents, surveille `nvidia-smi` et le message `OOM GPU pendant l'OCR
+(VRAM: …)` loggué par le serveur pour calibrer. Sur un GPU 24 Go (A10 / L4), on peut monter
+plus haut.
+
+> **Fragmentation entre pages.** Sur un run long, une page dense peut faire OOM faute de
+> bloc VRAM contigu alors qu'elle tiendrait à froid. `api_marker` pose donc
+> `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` au démarrage et vide le cache CUDA
+> entre chaque requête. En cas d'OOM, le serveur loggue la stack complète + l'état VRAM
+> (`OOM GPU pendant l'OCR (VRAM: …)`) pour aider à recalibrer le batch.
+
+### Paramètres critiques à vérifier avant de lancer
+
+Dans `libs/src/data_management/extract_image_to_json.py` :
+
+```python
+config = {
+    # 1. LLM activé/désactivé
+    #    False → OCR seul, pas d'amélioration des tableaux par LLM
+    #    True  → correction des tableaux par LLM (recommandé)
+    "use_llm": True,
+
+    # 2. Nom du modèle LLM — doit correspondre à un modèle disponible
+    #    Vérifier avec : curl http://localhost:1324/v1/models
+    "openai_model": "gemma4-26b-moe",
+
+    # 3. Batch size OCR — sélectionné AUTOMATIQUEMENT selon le device détecté
+    #    (cf. bloc `if use_gpu` dans le même fichier) :
+    #    CPU : 64   |   GPU A2 16 Go (vrais scans) : 32   |   GPU 24 Go (A10/L4) : plus haut
+    "recognition_batch_size": 32,
+
+    # 4. force_ocr — laissé à False : marker décide page par page (les pages scannées
+    #    ou à mauvaise couche texte sont OCR-isées, les pages nées-numériques sont lues
+    #    nativement, ~100× plus vite). Passer à True pour tout forcer dans le réseau.
+    "force_ocr": False,
 }
 ```
 
-## 6. Endpoints Déployés
+> **Attention :** `marker` ignore silencieusement les valeurs booléennes `False` dans sa configuration interne (`generate_config_dict` filtre toutes les valeurs falsy). `use_llm: False` est donc équivalent à ne pas spécifier la clé — le LLM est désactivé dans les deux cas.
 
-Les services sont exposés à l'extérieur du cluster via les URLs suivantes, définies dans les fichiers `Ingress` :
+### Checklist avant d'ouvrir le service sur GPU
 
-*   **API Centrale** : `http://extraction-tableau-centrale.lab.sspcloud.fr`
-    *   C'est le point d'entrée principal pour lancer une extraction.
+- [ ] Le pod/service dispose d'un GPU avec ≥ 16 Go de VRAM
+- [ ] `recognition_batch_size` ≤ 32 pour 16 Go de VRAM sur de vrais scans (profil GPU auto)
+- [ ] `openai_model` correspond à un modèle disponible (`curl http://localhost:1324/v1/models`)
+- [ ] `REAL_LLM_API_KEY` est définie et valide
+- [ ] `PROXY_URL` pointe vers `marker_proxy` (ex. `http://marker-proxy:1324/v1` en Kubernetes)
+- [ ] Le démarrage de `api_marker` s'est terminé sans erreur (les modèles sont bien chargés en VRAM)
+- [ ] `curl http://localhost:8001/docs` répond (swagger accessible)
+- [ ] `curl http://localhost:1324/health` renvoie `{"status": "ok", "real_llm_configured": true}`
 
-*   **API Marker** : `http://extraction-tableau-marker.lab.sspcloud.fr`
-    *   Service de traitement de PDF. Généralement appelé par l'API Centrale.
-    *   Utilisable sans l'API centrale (notament lorsque des problèmes avec l'API INPI surviennent)
+---
 
-*   **Proxy LLM** : `http://extraction-tableau-proxy.lab.sspcloud.fr`
-    *   Proxy d'observabilité pour le modèle de langage. Généralement appelé par l'API Marker.
+
+## Troubleshooting
+
+| Symptôme | Cause probable | Solution |
+|---|---|---|
+| OCR très lent (>10 min/page) | Inférence sur CPU, pas de GPU | Vérifier que CUDA est disponible dans le pod |
+| `400 - Model not found` dans les logs | `openai_model` incorrect | Vérifier les modèles disponibles via `/v1/models` |
+| `use_llm: False` n'a aucun effet | Bug marker : les valeurs `False` sont filtrées | Comportement normal, `False` = LLM désactivé |
+| `AssertionError: openai_api_key` au démarrage | `REAL_LLM_API_KEY` non définie | Définir la variable d'environnement |
+| OOM GPU pendant l'OCR | `recognition_batch_size` trop élevé | Réduire (24, 16…) et les autres `*_batch_size` à proportion. Le serveur loggue `OOM GPU pendant l'OCR (VRAM: …)` |
+| Une modif de `libs/src/**` ne change rien au comportement | `extraction-common` installé en **copie figée** dans le venv | `editable = true` dans `[tool.uv.sources]` puis `uv sync`. Vérifier : `uv run python -c "import data_management.extract_image_to_json as m; print(m.__file__)"` doit pointer vers `libs/src/...`, pas vers `.venv/...` |
+| `torch.cuda.is_available() == False` | wheel torch incompatible avec le driver (CUDA build ≠ driver) | Épingler un build torch compatible (voir `pyproject.toml`, index `pytorch-cu128` pour driver CUDA 12.x) |
+| Les tableaux ne sont pas corrigés | `use_llm: False` dans la config | Passer à `use_llm: True` |
