@@ -197,22 +197,25 @@ Les modèles sont tous chargés au démarrage de `api_marker` et restent en VRAM
 | Text detection | float16 | 0,08 Go |
 | **Total statique** | | **~3,5 Go** |
 
-Pendant l'inférence OCR (KV cache + activations). Mesures empiriques sur **NVIDIA A2
-16 Go** (15,36 Go utilisables), LLM déporté sur le proxy, `force_ocr` activé :
+Pendant l'inférence OCR (KV cache + activations). Mesures sur **NVIDIA A2 16 Go**
+(15,36 Go utilisables), LLM déporté sur le proxy, `force_ocr` activé, **sur des PDF de test
+synthétiques** (pages peu denses, petites images) :
 
 | `recognition_batch_size` | VRAM pic (reserved) | % de 15,36 Go | Marge |
 |---|---|---|---|
-| 96 (config actuelle) | ~10,9 Go | 71 % | ~4,5 Go ✅ |
-| 128 | ~13,3 Go | 86 % | ~2 Go ⚠️ |
-| 160 / 224 | ~14,2 Go | 93 % | ~1 Go — OOM sur page dense |
+| **32 (config actuelle)** | non mesuré sur synthétique | — | choisi pour tenir sur de **vrais scans** |
+| 96 | ~10,9 Go | 71 % | ~4,5 Go sur synthétique, mais **OOM sur vrais scans** |
+| 128 | ~13,3 Go | 86 % | ~2 Go |
+| 160 / 224 | ~14,2 Go | 93 % | ~1 Go — OOM |
 
-Au-delà de ~160 le débit ne progresse plus (le nombre de lignes par page plafonne le
+⚠️ Ces chiffres sont **optimistes** : ils viennent de PDF synthétiques. Sur de vrais scans
+de comptes sociaux, un batch 96 a saturé les 14,6 Go (OOM) — d'où le repli à **32**. Au-delà
+de ~160 le débit ne progresse plus de toute façon (le nombre de lignes par page plafonne le
 batch effectif), donc monter le batch ne fait que rogner la marge sans gain de vitesse.
 
-**La VRAM ne dépend pas que du batch, mais aussi de la taille des images.** Sur de vrais
-scans de comptes sociaux (grandes images haute résolution), chaque crop de ligne est lourd :
-un batch 96 a saturé les 14,6 Go (OOM) sur une page de ~200 lignes, là où des pages
-synthétiques plus petites tenaient à 11-12 Go au même batch.
+**La VRAM ne dépend pas que du batch, mais aussi de la taille des images** : sur de grandes
+images haute résolution, chaque crop de ligne est plus lourd, ce qui explique l'OOM à 96 sur
+de vrais scans alors que les pages synthétiques (plus petites) tenaient à 11-12 Go.
 
 **Règle : sur un GPU 16 Go traitant de vrais scans, garder `recognition_batch_size` ≤ 32**
 (config actuelle). Les chiffres du tableau ci-dessus (PDF synthétiques) sont des planchers
