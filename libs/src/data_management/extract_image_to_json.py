@@ -2,6 +2,8 @@ import json
 import os
 import time
 
+import torch
+
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.config.parser import ConfigParser
@@ -36,10 +38,43 @@ def extract_pdf(pdf_path: str, tmpdir: str, artifact_dict: dict) -> dict:
     except Exception as e:
         raise PdfConversionError(f"Erreur de conversion PDF vers image: {e}") from e
 
+    # Détection du device : GPU si CUDA disponible, sinon CPU
+    use_gpu = torch.cuda.is_available()
+    print(f"Device marker : {'cuda (' + torch.cuda.get_device_name(0) + ')' if use_gpu else 'cpu'}")
+
+    # Batch sizes selon le device.
+    # NB : le LLM (use_llm) est déporté sur le marker_proxy (PROXY_URL), donc le GPU
+    # local ne sert qu'aux modèles surya -> on a de la marge VRAM sur les 16 Go d'une T4.
+    if use_gpu:
+        # Réglages pour une T4 16 Go (modèles surya uniquement en local).
+        # Calibré au-dessus des défauts CUDA de surya (recognition 256 / detection 32)
+        # car le LLM est déporté sur le proxy : la VRAM est quasi entièrement libre.
+        # À ajuster en surveillant `nvidia-smi` (cible ~11-12 Go / 15 Go).
+        batch_sizes = {
+            "detection_batch_size": 36,
+            "recognition_batch_size": 224,
+            "layout_batch_size": 24,
+            "table_rec_batch_size": 28,
+            "equation_batch_size": 16,
+        }
+    else:
+        # Réglages conservateurs pour CPU
+        batch_sizes = {
+            "detection_batch_size": 6,
+            "recognition_batch_size": 64,
+            "layout_batch_size": 6,
+            "table_rec_batch_size": 6,
+            "equation_batch_size": 6,
+        }
+
     # Configuration Marker
     config = {
         "output_format": "json",
-        "force_ocr": True,
+        # force_ocr=False : marker décide page par page. Les pages scan/image (sans
+        # couche texte exploitable) ou à couche texte jugée mauvaise sont quand même
+        # OCR-isées (cf. LineBuilder.get_all_lines) ; seules les pages de vrai texte
+        # numérique sont lues directement -> gros gain sur des PDFs hybrides.
+        "force_ocr": False,
         "use_llm": True,
         "llm_service": "marker.services.openai.OpenAIService",
         "openai_base_url": os.getenv("PROXY_URL"),
@@ -48,14 +83,11 @@ def extract_pdf(pdf_path: str, tmpdir: str, artifact_dict: dict) -> dict:
         "timeout": 99999,
         # --- parallélisme intra-document ---
         "pdftext_workers": 8,
-        # --- batch sizes (CPU, donc on reste raisonnable) ---
-        "detection_batch_size": 6,
-        "recognition_batch_size": 64,
-        "layout_batch_size": 6,
-        "table_rec_batch_size": 6,
-        "equation_batch_size": 6,
-        # --- concurrence LLM : LE levier principal pour ton cas ---
-        "max_concurrency": 10,
+        # --- batch sizes (adaptés au device détecté) ---
+        **batch_sizes,
+        # Parallélisme des appels LLM (réseau, via le marker_proxy) : indépendant du GPU.
+        # À calibrer selon ce que le LLM distant tolère (sinon 429 / timeouts).
+        "max_concurrency": 15,
     }
 
     parser = ConfigParser(config)
