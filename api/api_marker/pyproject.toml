@@ -14,7 +14,21 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.26",
     "uvicorn[standard]>=0.45.0",
+    # Rendu explicite uniquement pour pouvoir épingler le build CUDA (voir ci-dessous).
+    "torch>=2.11.0",
 ]
 
 [tool.uv.sources]
 extraction-common = { path = "../../libs" }
+# --- TEMPORAIRE ---
+# Le wheel torch par défaut (PyPI) est compilé pour CUDA 13.0 (+cu130), incompatible
+# avec le driver actuel du service (CUDA 12.9) : torch.cuda.is_available() == False,
+# donc marker bascule sur CPU. On force un build CUDA 12.8, compatible 12.9.
+# À RETIRER (revenir au wheel PyPI par défaut) une fois le driver monté en >= 13.0.
+torch = { index = "pytorch-cu128" }
+
+# --- TEMPORAIRE (cf. ci-dessus) : index du build CUDA 12.8 de torch ---
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
