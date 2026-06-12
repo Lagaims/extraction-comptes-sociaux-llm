@@ -12,7 +12,7 @@ dependencies = [
     "pillow>=10.4.0",
     "pymupdf>=1.27.2.2",
     "python-dotenv>=1.2.2",
-    "python-multipart>=0.0.26",
+    "python-multipart>=0.0.27",
     "uvicorn[standard]>=0.45.0",
     # Rendu explicite uniquement pour pouvoir épingler le build CUDA (voir ci-dessous).
     "torch>=2.11.0",
