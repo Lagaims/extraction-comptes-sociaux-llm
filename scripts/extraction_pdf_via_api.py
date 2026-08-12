@@ -87,26 +87,25 @@ load_dotenv()
 AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET")
 
 API_URLS = {
-    "marker":          os.getenv("API_MARKER_URL",         "http://localhost:8001"),
-    "opendataloader":  os.getenv("API_OPENDATALOADER_URL", "http://localhost:8002"),
-    "chandra":         os.getenv("API_CHANDRA_URL",        "http://localhost:8003"),
+    "marker": os.getenv("API_MARKER_URL", "http://localhost:8001"),
+    "opendataloader": os.getenv("API_OPENDATALOADER_URL", "http://localhost:8002"),
+    "chandra": os.getenv("API_CHANDRA_URL", "http://localhost:8003"),
 }
 
 S3_BASE = "s3://projet-extraction-tableaux"
 PARQUET_PATH = f"{S3_BASE}/reprise/correspondances.parquet"
 OUTPUT_PREFIXES = {
-    "marker":         "reprise/output_marker",
+    "marker": "reprise/output_marker",
     "opendataloader": "reprise/output_opendataloader",
-    "chandra":        "reprise/output_chandra",
+    "chandra": "reprise/output_chandra",
 }
 OUTPUT_EXTENSIONS = {
-    "marker":         ".json",
+    "marker": ".json",
     "opendataloader": ".html",
-    "chandra":        ".json",
+    "chandra": ".json",
 }
 
 S3_BUCKET = S3_BASE.removeprefix("s3://")
-
 
 
 def list_pdfs(fs: s3fs.S3FileSystem) -> list[str]:
@@ -177,7 +176,7 @@ def process_from_parquet(fs: s3fs.S3FileSystem, api: str):
             skipped += 1
             continue
 
-        print(f"\n{'='*60}\n[TRAITEMENT] {siren}\n{'='*60}")
+        print(f"\n{'=' * 60}\n[TRAITEMENT] {siren}\n{'=' * 60}")
         content = extract_pdf_via_api(fs, pdf_path, api)
 
         if content is None:
@@ -188,12 +187,14 @@ def process_from_parquet(fs: s3fs.S3FileSystem, api: str):
         save_output(fs, siren, content, api)
         ok += 1
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Terminé : {ok} traité(s), {skipped} ignoré(s) (déjà faits), {errors} erreur(s)")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extraction des PDFs via API (marker ou opendataloader)")
+    parser = argparse.ArgumentParser(
+        description="Extraction des PDFs via API (marker ou opendataloader)"
+    )
     parser.add_argument(
         "--api",
         choices=["marker", "opendataloader", "chandra"],
@@ -203,11 +204,13 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--list", action="store_true", help="Lister les PDFs disponibles dans S3")
     group.add_argument(
-        "--pdf-key", metavar="KEY",
+        "--pdf-key",
+        metavar="KEY",
         help="Chemin du PDF dans S3 (ex: dossier/fichier.pdf) — affiche le JSON en sortie",
     )
     group.add_argument(
-        "--from-parquet", action="store_true",
+        "--from-parquet",
+        action="store_true",
         help="Traiter tous les PDFs de correspondances.parquet ayant un xlsx associé",
     )
     args = parser.parse_args()

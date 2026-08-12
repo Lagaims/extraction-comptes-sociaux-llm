@@ -26,15 +26,14 @@ Usage :
     uv run evaluation_extraction.py [--threshold 0.5 --cell-delta 0]
 """
 
+import argparse
 import io
 import re
-import argparse
 from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
 from extraction_common.s3 import get_s3_fs
 
 BUCKET = "projet-extraction-tableaux"
@@ -45,14 +44,15 @@ S3_CORRESPONDANCES = f"{BUCKET}/reprise/correspondances.parquet"
 _SIREN_RE = re.compile(r"\d{9}")
 
 METHODS: dict[str, str] = {
-    "marker":           f"{BUCKET}/reprise/output_csv/marker",
-    "opendataloader":   f"{BUCKET}/reprise/output_csv/opendataloader",
-    "chandra":          f"{BUCKET}/reprise/output_csv/chandra",
+    "marker": f"{BUCKET}/reprise/output_csv/marker",
+    "opendataloader": f"{BUCKET}/reprise/output_csv/opendataloader",
+    "chandra": f"{BUCKET}/reprise/output_csv/chandra",
     "marker_last_work": f"{BUCKET}/LLM_eval/output_csv/marker_last_work",
 }
 
 
 # ── Chargement S3 ─────────────────────────────────────────────────────────────
+
 
 def _load_correspondances(fs) -> dict[str, list[str]]:
     """
@@ -78,6 +78,7 @@ def _load_correspondances(fs) -> dict[str, list[str]]:
 
 def _load_csv(fs, path: str) -> pd.DataFrame:
     import csv as _csv
+
     with fs.open(path, "r", encoding="utf-8-sig") as f:
         rows = list(_csv.reader(f, delimiter=";"))
     if not rows:
@@ -139,6 +140,7 @@ def _list_pairs_from_correspondances(fs, pred_prefix: str) -> list[tuple[str, st
 
 # ── Helpers cellules ──────────────────────────────────────────────────────────
 
+
 def _is_numeric(value: str) -> bool:
     s = value.strip().replace(",", ".").replace(" ", "").replace(" ", "")
     if not s:
@@ -155,10 +157,19 @@ def _is_empty(value: str) -> bool:
 
 
 _NUMERIC_PLACEHOLDERS = {
-    "-", "–", "—", "n.a.", "n/a", "nd", "n.d.", "ns", "nc", "n.c.",
+    "-",
+    "–",
+    "—",
+    "n.a.",
+    "n/a",
+    "nd",
+    "n.d.",
+    "ns",
+    "nc",
+    "n.c.",
 }
 _UNIT_SUFFIX_RE = re.compile(
-    r'(?i)\s*(€|eur|euros?|usd|\$|gbp|£|nok|sek|chf|jpy|¥|kr|%|pp|bps?)\s*$'
+    r"(?i)\s*(€|eur|euros?|usd|\$|gbp|£|nok|sek|chf|jpy|¥|kr|%|pp|bps?)\s*$"
 )
 
 
@@ -196,13 +207,13 @@ def _normalize_numeric_str(val: str) -> str:
     """
     s = val.strip()
     # Espaces séparateurs de milliers (normaux, insécables  ,  )
-    s = re.sub(r'(\d)[\s  ]+(\d)', r'\1\2', s)
+    s = re.sub(r"(\d)[\s  ]+(\d)", r"\1\2", s)
     # Pourcentages → décimales
-    m = re.fullmatch(r'(-?\d+(?:[,\.]\d+)?)\s*%', s)
+    m = re.fullmatch(r"(-?\d+(?:[,\.]\d+)?)\s*%", s)
     if m:
         try:
-            n = float(m.group(1).replace(',', '.')) / 100
-            s = f'{n:.6g}'
+            n = float(m.group(1).replace(",", ".")) / 100
+            s = f"{n:.6g}"
         except ValueError:
             pass
     return s
@@ -237,6 +248,7 @@ def _non_numeric_rate(series: pd.Series) -> float:
 
 
 # ── Étape 1 : Détection des en-têtes ─────────────────────────────────────────
+
 
 def detect_column_header_height(df: pd.DataFrame) -> int:
     """
@@ -290,6 +302,7 @@ def detect_row_header_width(df: pd.DataFrame) -> int:
 
 # ── Étape 2 : Matching Levenshtein + Gale-Shapley ────────────────────────────
 
+
 def _levenshtein_distance(s: str, t: str) -> int:
     m, n = len(s), len(t)
     if m < n:
@@ -336,10 +349,7 @@ def _gale_shapley(scores: np.ndarray) -> dict[int, int]:
     """
     n_a, n_b = scores.shape
     prefs_a = [list(np.argsort(-scores[i])) for i in range(n_a)]
-    rank_b = {
-        j: {i: r for r, i in enumerate(np.argsort(-scores[:, j]))}
-        for j in range(n_b)
-    }
+    rank_b = {j: {i: r for r, i in enumerate(np.argsort(-scores[:, j]))} for j in range(n_b)}
     free_a = list(range(n_a))
     next_prop = [0] * n_a
     match_b: dict[int, int] = {}
@@ -366,22 +376,20 @@ def _gale_shapley(scores: np.ndarray) -> dict[int, int]:
     return match_a
 
 
-def _match_headers(
-    ann_texts: list[str], pred_texts: list[str], threshold: float
-) -> dict[int, int]:
+def _match_headers(ann_texts: list[str], pred_texts: list[str], threshold: float) -> dict[int, int]:
     """Retourne {ann_idx: pred_idx} pour les paires dont la similarité >= threshold."""
     n_a, n_p = len(ann_texts), len(pred_texts)
     if n_a == 0 or n_p == 0:
         return {}
-    scores = np.array([
-        [_lev_similarity(ann_texts[i], pred_texts[j]) for j in range(n_p)]
-        for i in range(n_a)
-    ])
+    scores = np.array(
+        [[_lev_similarity(ann_texts[i], pred_texts[j]) for j in range(n_p)] for i in range(n_a)]
+    )
     raw = _gale_shapley(scores)
     return {i: j for i, j in raw.items() if scores[i, j] >= threshold}
 
 
 # ── Étape 3 : Métriques ───────────────────────────────────────────────────────
+
 
 def evaluate_pair(
     annotation: pd.DataFrame,
@@ -438,12 +446,12 @@ def evaluate_pair(
                     if match:
                         recovered_num += 1
 
-    numeric_recovery = recovered_num / total_num if total_num else float("nan") # cas sans cellules 
+    numeric_recovery = recovered_num / total_num if total_num else float("nan")  # cas sans cellules
 
     # Indicatrice d'extraction totale :
     # (1) structure complète : toutes les colonnes ET lignes de l'annotation sont matchées
     # (2) toutes les cellules numériques de la zone de données sont récupérées (normalisées)
-    total_ok = (len(col_match) == n_ann_cols and len(row_match) == n_ann_rows)
+    total_ok = len(col_match) == n_ann_cols and len(row_match) == n_ann_rows
     if total_ok:
         for r in range(ann_hrows, n_ann_rows):
             if not total_ok:
@@ -482,7 +490,7 @@ def evaluate_pair(
 
 # ── Comptage de tableaux par SIREN ────────────────────────────────────────────
 
-_BASE_STEM_RE = re.compile(r'^(.*?)_(\d+)$')
+_BASE_STEM_RE = re.compile(r"^(.*?)_(\d+)$")
 
 
 def _base_stem(name: str) -> str:
@@ -498,6 +506,7 @@ def _count_per_base(fs, prefix: str, ext: str) -> Counter:
 
 
 # ── Évaluation par lot ────────────────────────────────────────────────────────
+
 
 def evaluate_dataset(threshold: float = 0.5, cell_delta: int = 0) -> pd.DataFrame:
     fs = get_s3_fs()
@@ -574,7 +583,9 @@ def _print_summary(df: pd.DataFrame) -> None:
             n_total = len(siren_df)
             n_match = (siren_df["n_pred_tables"] == siren_df["n_ann_tables"]).sum()
             print(f"    {'---':<25}")
-            print(f"    {'table_count_accuracy':<25}: {n_match / n_total:.4f}  ({n_match}/{n_total} SIREN)")
+            print(
+                f"    {'table_count_accuracy':<25}: {n_match / n_total:.4f}  ({n_match}/{n_total} SIREN)"
+            )
             print(f"    {'moy. tableaux annotés':<25}: {siren_df['n_ann_tables'].mean():.2f}")
             print(f"    {'moy. tableaux détectés':<25}: {siren_df['n_pred_tables'].mean():.2f}")
 
@@ -584,11 +595,15 @@ def _print_summary(df: pd.DataFrame) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Évaluation de l'extraction de tableaux")
     parser.add_argument(
-        "--threshold", type=float, default=0.5,
+        "--threshold",
+        type=float,
+        default=0.5,
         help="Seuil de similarité Levenshtein pour le matching (défaut : 0.5)",
     )
     parser.add_argument(
-        "--cell-delta", type=int, default=0,
+        "--cell-delta",
+        type=int,
+        default=0,
         help="Tolérance en colonnes (±) pour numeric_recovery et total_extraction (défaut : 0)",
     )
     args = parser.parse_args()

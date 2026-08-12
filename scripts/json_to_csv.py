@@ -26,7 +26,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import s3fs
-
 from extraction_common.s3 import get_s3_fs
 
 BUCKET = "projet-extraction-tableaux"
@@ -59,6 +58,7 @@ Table = list[list[str]]
 
 
 # ── Extracteurs ───────────────────────────────────────────────────────────────
+
 
 class TableExtractor(ABC):
     @abstractmethod
@@ -146,6 +146,7 @@ class OpenDataLoaderTableExtractor(TableExtractor):
 
 # ── Parser HTML interne (Marker) ──────────────────────────────────────────────
 
+
 class _TableHTMLParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -197,6 +198,7 @@ def _parse_html_tables(html: str) -> list[Table]:
 
 # ── Sérialisation ─────────────────────────────────────────────────────────────
 
+
 def _to_csv_bytes(table: Table) -> bytes:
     buf = io.StringIO()
     csv.writer(buf, delimiter=";").writerows(table)
@@ -204,6 +206,7 @@ def _to_csv_bytes(table: Table) -> bytes:
 
 
 # ── Pipeline S3 ───────────────────────────────────────────────────────────────
+
 
 def _load(fs: s3fs.S3FileSystem, path: str, ext: str):
     """Charge un fichier S3 : renvoie un dict (JSON) ou une str (HTML)."""
@@ -220,10 +223,10 @@ def run_pipeline(method: str, fs: s3fs.S3FileSystem) -> None:
     ext = cfg["ext"]
     strip_prefix = cfg.get("strip_prefix", "")
     extractors: dict[str, TableExtractor] = {
-        "marker":           MarkerTableExtractor(),
+        "marker": MarkerTableExtractor(),
         "marker_last_work": MarkerTableExtractor(),
-        "opendataloader":   OpenDataLoaderTableExtractor(),
-        "chandra":          ChandraTableExtractor(),
+        "opendataloader": OpenDataLoaderTableExtractor(),
+        "chandra": ChandraTableExtractor(),
     }
     extractor = extractors[method]
 
@@ -262,6 +265,7 @@ def run_pipeline(method: str, fs: s3fs.S3FileSystem) -> None:
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Conversion JSON → CSV (Marker / OpenDataLoader)")

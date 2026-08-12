@@ -50,6 +50,7 @@ app = FastAPI(
 
 # ── Conversion PDF → images base64 ───────────────────────────────────────────
 
+
 def _pdf_to_b64_images(pdf_path: str, dpi: int) -> list[str]:
     doc = fitz.open(pdf_path)
     mat = fitz.Matrix(dpi / 72, dpi / 72)
@@ -62,6 +63,7 @@ def _pdf_to_b64_images(pdf_path: str, dpi: int) -> list[str]:
 
 
 # ── Parsing HTML → tableaux ───────────────────────────────────────────────────
+
 
 class _TableParser(HTMLParser):
     """Extrait les tableaux HTML en listes de listes de chaînes."""
@@ -107,6 +109,7 @@ def _parse_chandra_html(content: str) -> list[list[list[str]]]:
 
 # ── Appel VLM ────────────────────────────────────────────────────────────────
 
+
 async def _extract_tables_from_image(
     client: AsyncOpenAI, b64_image: str, model: str
 ) -> list[list[list[str]]]:
@@ -140,6 +143,7 @@ async def _extract_tables_from_image(
 
 
 # ── Endpoint /extract ─────────────────────────────────────────────────────────
+
 
 @app.post("/extract")
 async def extract(pdf: UploadFile = File(...)):
@@ -181,4 +185,5 @@ async def extract(pdf: UploadFile = File(...)):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8003)

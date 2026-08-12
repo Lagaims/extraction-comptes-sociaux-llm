@@ -239,16 +239,13 @@ config = {
     #    False → OCR seul, pas d'amélioration des tableaux par LLM
     #    True  → correction des tableaux par LLM (recommandé)
     "use_llm": True,
-
     # 2. Nom du modèle LLM — doit correspondre à un modèle disponible
     #    Vérifier avec : curl http://localhost:1324/v1/models
     "openai_model": "gemma4-26b-moe",
-
     # 3. Batch size OCR — sélectionné AUTOMATIQUEMENT selon le device détecté
     #    (cf. bloc `if use_gpu` dans le même fichier) :
     #    CPU : 64   |   GPU A2 16 Go (vrais scans) : 32   |   GPU 24 Go (A10/L4) : plus haut
     "recognition_batch_size": 32,
-
     # 4. force_ocr — laissé à False : marker décide page par page (les pages scannées
     #    ou à mauvaise couche texte sont OCR-isées, les pages nées-numériques sont lues
     #    nativement, ~100× plus vite). Passer à True pour tout forcer dans le réseau.
