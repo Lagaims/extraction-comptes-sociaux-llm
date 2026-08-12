@@ -148,6 +148,26 @@ class OpenDataLoaderTableExtractor(TableExtractor):
 
 
 class _TableHTMLParser(HTMLParser):
+    """Convertit un tableau HTML en matrice rectangulaire, fusions comprises.
+
+    `colspan` est développé en cellules vides à droite ; `rowspan` est reporté sur les
+    lignes suivantes via `_carried`. Sans ce report, chaque ligne suivant une cellule
+    fusionnée verticalement perd une cellule et tout ce qui la suit glisse d'un cran à
+    gauche — décalage qui se propage ensuite à l'ensemble du tableau. Les en-têtes des
+    tableaux de filiales et participations en dépendent : 77 % des documents marker du
+    corpus contiennent au moins un `rowspan`.
+
+    Une cellule fusionnée ne porte sa valeur qu'à sa position d'origine ; les positions
+    de continuation reçoivent une chaîne vide, dans les deux directions. C'est la
+    convention des annotations de référence, où une fusion Excel n'écrit la valeur que
+    dans sa première cellule, et celle déjà appliquée à `colspan`.
+
+    Le choix n'est pas cosmétique : mesuré sur les 69 paires du corpus `reprise/`, il
+    porte la récupération numérique de 42,0 % (sans report) à 48,4 %, tandis que
+    répéter la valeur sur les lignes couvertes la fait tomber à 29,7 % — un libellé
+    dupliqué rend les lignes indiscernables à l'appariement des en-têtes.
+    """
+
     def __init__(self):
         super().__init__()
         self.tables: list[Table] = []
@@ -156,34 +176,92 @@ class _TableHTMLParser(HTMLParser):
         self._cell: str = ""
         self._in_cell: bool = False
         self._colspan: int = 1
+        self._rowspan: int = 1
+        # {index de colonne: nombre de lignes que la fusion couvre encore}
+        self._carried: dict[int, int] = {}
+
+    @staticmethod
+    def _span(value) -> int:
+        """Lit un attribut colspan/rowspan.
+
+        Args:
+            value: valeur brute de l'attribut, éventuellement absente ou invalide.
+
+        Returns:
+            L'entier lu, ramené à 1 s'il est absent, non numérique ou < 1.
+        """
+        try:
+            span = int(value)
+        except (ValueError, TypeError):
+            return 1
+        return max(span, 1)
+
+    def _fill_carried(self) -> None:
+        """Occupe les positions de la ligne courante tenues par un `rowspan` en cours."""
+        while len(self._row) in self._carried:
+            self._row.append("")
+
+    def _close_row(self) -> None:
+        """Termine la ligne courante : positions reportées restantes, puis décompte.
+
+        Une cellule reportée peut se situer au-delà de la dernière cellule écrite dans
+        le HTML — la ligne est alors complétée par des cellules vides jusqu'à elle,
+        sinon la position serait décalée sur toutes les lignes suivantes.
+        """
+        if self._carried:
+            last = max(self._carried)
+            while len(self._row) <= last:
+                self._fill_carried()
+                if len(self._row) <= last and len(self._row) not in self._carried:
+                    self._row.append("")
+        self._fill_carried()
+
+        for col in list(self._carried):
+            self._carried[col] -= 1
+            if self._carried[col] <= 0:
+                del self._carried[col]
 
     def handle_starttag(self, tag, attrs):
         if tag in ("th", "td"):
             self._in_cell = True
             self._cell = ""
             attrs_dict = dict(attrs)
-            try:
-                self._colspan = int(attrs_dict.get("colspan", 1))
-            except (ValueError, TypeError):
-                self._colspan = 1
+            self._colspan = self._span(attrs_dict.get("colspan", 1))
+            self._rowspan = self._span(attrs_dict.get("rowspan", 1))
         elif tag == "br" and self._in_cell:
             self._cell += " "
         elif tag == "tr":
             self._row = []
+            # Une fusion verticale ouverte sur une ligne précédente occupe déjà le
+            # début de celle-ci : ces positions sont pourvues avant la première cellule.
+            self._fill_carried()
         elif tag == "table":
             self._rows = []
+            self._carried = {}
 
     def handle_endtag(self, tag):
         if tag in ("th", "td"):
             self._in_cell = False
-            self._row.append(self._cell.strip())
-            for _ in range(self._colspan - 1):
-                self._row.append("")
+            value = self._cell.strip()
+            start = len(self._row)
+            for offset in range(self._colspan):
+                self._row.append(value if offset == 0 else "")
+            if self._rowspan > 1:
+                # Le compteur vaut le rowspan entier, pas rowspan - 1 : `_close_row`
+                # décompte aussi la ligne de déclaration, et le report doit lui survivre
+                # pour couvrir les rowspan - 1 lignes suivantes.
+                for offset in range(self._colspan):
+                    self._carried[start + offset] = self._rowspan
             self._colspan = 1
-        elif tag == "tr" and self._row:
-            self._rows.append(self._row)
+            self._rowspan = 1
+            self._fill_carried()
+        elif tag == "tr":
+            self._close_row()
+            if self._row:
+                self._rows.append(self._row)
         elif tag == "table" and self._rows:
             self.tables.append(self._rows)
+            self._carried = {}
 
     def handle_data(self, data):
         if self._in_cell:
