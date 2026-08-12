@@ -1,0 +1,50 @@
+project:
+  type: website
+  output-dir: _site
+  # Le JSON de comparaison est produit par build_data.py et n'est pas versionné :
+  # il doit être copié tel quel dans le site rendu.
+  resources:
+    - data/comparaisons.json
+
+website:
+  title: "Diagnostic d'extraction"
+  description: >
+    Où se perdent les valeurs des tableaux de comptes sociaux entre le PDF scanné
+    et le CSV final, et quels correctifs sont les plus rentables.
+  favicon: favicon.svg
+  navbar:
+    logo: favicon.svg
+    left:
+      - href: index.qmd
+        text: Synthèse
+      - href: chiffres.qmd
+        text: Chiffres et cas
+      - href: ameliorations.qmd
+        text: Améliorations
+      - href: comparaison.qmd
+        text: Comparaison des tableaux
+    right:
+      - icon: github
+        href: https://github.com/InseeFrLab/extraction-comptes-sociaux-llm
+        aria-label: Dépôt GitHub
+  page-footer:
+    center: >
+      Corpus `s3://projet-extraction-tableaux/reprise/` — 48 PDF, 74 tableaux annotés.
+      Raisons sociales et SIREN pseudonymisés.
+  search: false
+
+format:
+  html:
+    theme:
+      light: [cosmo, styles.scss]
+      dark: [cosmo, styles.scss, styles-dark.scss]
+    toc: true
+    toc-title: Sur cette page
+    toc-depth: 3
+    number-sections: false
+    anchor-sections: true
+    fig-responsive: true
+    lang: fr
+    # Les pages sont rédigées à la main : aucun moteur d'exécution à charger.
+    execute:
+      enabled: false

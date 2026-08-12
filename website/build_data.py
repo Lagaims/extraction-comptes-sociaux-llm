@@ -1,0 +1,721 @@
+#!/usr/bin/env python3
+"""Construit le jeu de données du site à partir de S3, en pseudonymisant les entités.
+
+Lit les annotations de référence et les CSV prédits, les convertit en grilles de
+cellules annotées (appariement ligne/colonne, statut de chaque cellule) puis écrit
+`data/comparaisons.json`, consommé par la page « Comparaison » du site.
+
+Aucune raison sociale, adresse ni SIREN réel ne sort de ce script : voir
+`Pseudonymizer`. Les montants sont conservés — ce sont eux que le site doit montrer.
+
+Usage :
+    uv run --project website python website/build_data.py
+    uv run --project website python website/build_data.py --limit 5   # itération rapide
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv as csv_mod
+import io
+import json
+import re
+import sys
+import unicodedata
+from collections import Counter, defaultdict
+from pathlib import Path
+
+import pandas as pd
+
+# Les fonctions d'évaluation sont réutilisées telles quelles : le site doit décrire
+# le pipeline en place, pas une réimplémentation qui divergerait silencieusement.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+import evaluation_extraction as E  # noqa: E402
+from extraction_common.s3 import get_s3_fs  # noqa: E402
+
+BUCKET = "projet-extraction-tableaux"
+S3_ANNOTATIONS = f"{BUCKET}/annotations/clean"
+METHODS: dict[str, str] = {
+    "marker": f"{BUCKET}/reprise/output_csv/marker",
+    "chandra": f"{BUCKET}/reprise/output_csv/chandra",
+}
+OUT_PATH = Path(__file__).parent / "data" / "comparaisons.json"
+
+MATCH_THRESHOLD = 0.5
+
+
+# ── Pseudonymisation ──────────────────────────────────────────────────────────
+
+# Vocabulaire comptable des tableaux de filiales et participations, sous forme de
+# radicaux normalisés (sans accent, minuscule).
+#
+# Un libellé n'est conservé que si TOUS ses mots significatifs figurent ici. La règle
+# est volontairement stricte dans ce sens : « societes etrangeres » est un intertitre
+# et se conserve, « societe generale » est une entité et se pseudonymise. La règle
+# inverse — conserver dès qu'un mot est du vocabulaire — laisserait fuiter toute
+# raison sociale contenant « société », « capital » ou « participations ».
+_VOCAB = {
+    "societe",
+    "societes",
+    "filiale",
+    "filiales",
+    "participation",
+    "participations",
+    "sous",
+    "total",
+    "totaux",
+    "capital",
+    "capitaux",
+    "propre",
+    "propres",
+    "resultat",
+    "resultats",
+    "chiffre",
+    "chiffres",
+    "affaire",
+    "affaires",
+    "dividende",
+    "dividendes",
+    "pret",
+    "prets",
+    "avance",
+    "avances",
+    "consenti",
+    "consentis",
+    "caution",
+    "cautions",
+    "aval",
+    "avals",
+    "fourni",
+    "fournis",
+    "quote",
+    "quotepart",
+    "part",
+    "parts",
+    "titre",
+    "titres",
+    "valeur",
+    "valeurs",
+    "comptable",
+    "comptables",
+    "inventaire",
+    "inventaires",
+    "brut",
+    "brute",
+    "brutes",
+    "net",
+    "nette",
+    "nettes",
+    "devise",
+    "devises",
+    "exercice",
+    "exercices",
+    "etranger",
+    "etrangere",
+    "etrangeres",
+    "etrangers",
+    "francais",
+    "francaise",
+    "francaises",
+    "renseignement",
+    "renseignements",
+    "globaux",
+    "global",
+    "globale",
+    "detaille",
+    "detaillee",
+    "detailles",
+    "autre",
+    "autres",
+    "montant",
+    "montants",
+    "nombre",
+    "detenu",
+    "detenue",
+    "detenus",
+    "siege",
+    "social",
+    "sociale",
+    "sociaux",
+    "denomination",
+    "euro",
+    "euros",
+    "eur",
+    "millier",
+    "milliers",
+    "million",
+    "millions",
+    "neant",
+    "observation",
+    "observations",
+    "nature",
+    "rubrique",
+    "libelle",
+    "concernant",
+    "excede",
+    "reserve",
+    "reserves",
+    "report",
+    "nouveau",
+    "provision",
+    "provisions",
+    "amortissement",
+    "amortissements",
+    "depreciation",
+    "immobilisation",
+    "immobilisations",
+    "financiere",
+    "financieres",
+    "financier",
+    "creance",
+    "creances",
+    "dette",
+    "dettes",
+    "compte",
+    "comptes",
+    "courant",
+    "courants",
+    "groupe",
+    "liee",
+    "liees",
+    "lie",
+    "lies",
+    "controle",
+    "controlees",
+    "cout",
+    "acquisition",
+    "cloture",
+    "ouverture",
+    "variation",
+    "mouvement",
+    "mouvements",
+    "cede",
+    "cedes",
+    "acquis",
+    "donnee",
+    "donnees",
+    "disponible",
+    "disponibles",
+    "note",
+    "notes",
+    "dont",
+    "hors",
+    "taxe",
+    "taxes",
+    "encaisse",
+    "encaisses",
+    "perte",
+    "pertes",
+    "benefice",
+    "benefices",
+    "exceptionnel",
+    "courante",
+    "annexe",
+    "tableau",
+    "information",
+    "informations",
+    "pourcentage",
+    "identification",
+    "numero",
+    "forme",
+    "juridique",
+    "activite",
+    "secteur",
+    "pays",
+    "adresse",
+    "date",
+}
+# Mots de liaison et déterminants : ils ne portent aucune identité, on les ignore
+# avant d'appliquer la règle du « tous les mots dans le vocabulaire ».
+_STOPWORDS = {
+    "de",
+    "du",
+    "des",
+    "d",
+    "la",
+    "le",
+    "les",
+    "l",
+    "et",
+    "en",
+    "au",
+    "aux",
+    "a",
+    "par",
+    "pour",
+    "sur",
+    "dans",
+    "cours",
+    "dernier",
+    "derniere",
+    "ou",
+    "plus",
+    "moins",
+    "un",
+    "une",
+    "se",
+    "sa",
+    "son",
+    "ses",
+    "qui",
+    "que",
+    "avec",
+    "sans",
+    "y",
+    "compris",
+    "ci",
+    "dessus",
+    "dessous",
+    "n",
+    "no",
+    "s",
+    "the",
+    "of",
+    "and",
+}
+# Un libellé purement numérique, une devise ISO ou un symbole n'identifie personne.
+_NON_ENTITY_RE = re.compile(r"^[\W\d\s]*$|^[A-Z]{3}$")
+
+
+def _norm_label(value: str) -> str:
+    """Forme canonique d'un libellé, pour regrouper ses variantes d'OCR.
+
+    Args:
+        value: libellé brut issu de l'annotation ou de la prédiction.
+
+    Returns:
+        Chaîne sans accents, minuscule, ponctuation réduite à des espaces simples.
+    """
+    s = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+class Pseudonymizer:
+    """Remplace les entités nommées par des pseudonymes stables sur tout le corpus.
+
+    Règle de décision, dans l'ordre :
+    1. libellé vide, purement numérique ou code devise ISO → conservé ;
+    2. libellé dont *tous* les mots significatifs sont du vocabulaire comptable
+       (`_VOCAB`) → conservé : c'est un en-tête ou un intertitre ;
+    3. sinon → pseudonymisé.
+
+    Le sens de la règle 2 est délibéré. Conserver un libellé dès qu'il *contient* un
+    mot de vocabulaire laisserait passer « Société Générale » ou « Orange Capital » ;
+    exiger que tous ses mots le soient ne conserve que les libellés structurels. Le
+    prix est une pseudonymisation parfois excessive d'intertitres inhabituels, ce qui
+    dégrade la lisibilité sans jamais exposer d'identité.
+
+    Les variantes proches d'un même nom (erreurs d'OCR) partagent le même numéro et se
+    distinguent par un suffixe : « Entité 07 » et « Entité 07·b ». Le lecteur voit
+    ainsi qu'il s'agit de la même entité *et* que les deux graphies diffèrent, ce qui
+    est précisément ce que la page de comparaison doit montrer.
+
+    L'appel est idempotent et mémoïsé : un même libellé reçoit toujours le même
+    pseudonyme, dans tous les tableaux et pour toutes les méthodes.
+    """
+
+    def __init__(self, similarity: float = 0.75) -> None:
+        self.similarity = similarity
+        self._groups: list[dict] = []  # {norm_ref, variants: {norm: suffix}}
+        self._cache: dict[str, str] = {}
+        # Les groupes sont indexés par longueur du libellé de référence. Une similarité
+        # de Levenshtein >= s impose min_len/max_len >= s : seules quelques classes de
+        # longueur peuvent donc contenir un groupe candidat. Sans cet index, le corpus
+        # (plusieurs milliers de libellés distincts) impose un balayage quadratique.
+        self._by_len: dict[int, list[dict]] = defaultdict(list)
+
+    @staticmethod
+    def _is_entity(label: str) -> bool:
+        """Détermine si un libellé désigne une entité à masquer.
+
+        Args:
+            label: libellé brut.
+
+        Returns:
+            True si le libellé doit être pseudonymisé.
+        """
+        stripped = label.strip()
+        if not stripped or _NON_ENTITY_RE.match(stripped):
+            return False
+        words = [w for w in _norm_label(label).split() if w and not w.isdigit()]
+        significant = [w for w in words if w not in _STOPWORDS]
+        if not significant:
+            return False
+        return not all(w in _VOCAB for w in significant)
+
+    def _group_for(self, norm: str) -> dict:
+        """Retourne le groupe de variantes de `norm`, en le créant au besoin.
+
+        Args:
+            norm: forme canonique du libellé.
+
+        Returns:
+            Le groupe de variantes auquel `norm` appartient.
+        """
+        n = len(norm)
+        lo = max(1, int(n * self.similarity))
+        hi = int(n / self.similarity) + 1
+        for length in range(lo, hi + 1):
+            for group in self._by_len.get(length, ()):
+                if E._lev_similarity(norm, group["norm_ref"]) >= self.similarity:
+                    return group
+        group = {"norm_ref": norm, "index": len(self._groups) + 1, "variants": {}}
+        self._groups.append(group)
+        self._by_len[n].append(group)
+        return group
+
+    def __call__(self, label: str) -> str:
+        """Pseudonymise un libellé si c'est une entité, sinon le retourne inchangé.
+
+        Args:
+            label: libellé brut.
+
+        Returns:
+            Le libellé d'origine, ou un pseudonyme stable de la forme « Entité 07 ».
+        """
+        if label in self._cache:
+            return self._cache[label]
+        if not self._is_entity(label):
+            self._cache[label] = label
+            return label
+        norm = _norm_label(label)
+        group = self._group_for(norm)
+        if norm not in group["variants"]:
+            # Le premier vu porte le nom nu ; les variantes d'OCR sont suffixées ·b, ·c…
+            suffix = "" if not group["variants"] else f"·{chr(ord('a') + len(group['variants']))}"
+            group["variants"][norm] = suffix
+        out = f"Entité {group['index']:02d}{group['variants'][norm]}"
+        self._cache[label] = out
+        return out
+
+    @property
+    def n_entities(self) -> int:
+        return len(self._groups)
+
+    def kept_labels(self) -> list[str]:
+        """Libellés conservés en clair — à inspecter pour vérifier l'absence de fuite."""
+        return sorted({k for k, v in self._cache.items() if k == v and k.strip()})
+
+
+class FileAliaser:
+    """Attribue un identifiant neutre et stable à chaque tableau (`TAB-01_1`)."""
+
+    def __init__(self) -> None:
+        self._map: dict[str, str] = {}
+
+    def __call__(self, stem: str) -> str:
+        """Traduit un nom de fichier contenant un SIREN en identifiant neutre.
+
+        Args:
+            stem: nom de fichier sans extension, p. ex. `974_487772899_TAB_2`.
+
+        Returns:
+            Identifiant de la forme `TAB-05_2` (rang du tableau conservé).
+        """
+        base, rank = _split_rank(stem)
+        if base not in self._map:
+            self._map[base] = f"TAB-{len(self._map) + 1:02d}"
+        return f"{self._map[base]}_{rank}" if rank else self._map[base]
+
+
+_RANK_RE = re.compile(r"^(.*?)_(\d+)$")
+
+
+def _split_rank(stem: str) -> tuple[str, str]:
+    """Sépare le nom de base et le rang du tableau (`x_2` → `('x', '2')`)."""
+    m = _RANK_RE.match(stem)
+    return (m.group(1), m.group(2)) if m else (stem, "")
+
+
+# ── Chargement ────────────────────────────────────────────────────────────────
+
+
+def load_csv(fs, path: str) -> pd.DataFrame:
+    """Charge un CSV prédit en grille de chaînes, lignes complétées à droite.
+
+    Args:
+        fs: système de fichiers S3.
+        path: chemin du CSV.
+
+    Returns:
+        DataFrame de chaînes, colonnes homogènes.
+    """
+    with fs.open(path, "r", encoding="utf-8-sig") as f:
+        rows = list(csv_mod.reader(f, delimiter=";"))
+    if not rows:
+        return pd.DataFrame()
+    max_cols = max(len(r) for r in rows)
+    return pd.DataFrame([r + [""] * (max_cols - len(r)) for r in rows], dtype=str).fillna("")
+
+
+def load_xlsx(fs, path: str) -> pd.DataFrame:
+    """Charge une annotation XLSX, lignes entièrement vides retirées.
+
+    Args:
+        fs: système de fichiers S3.
+        path: chemin du XLSX.
+
+    Returns:
+        DataFrame de chaînes, index réinitialisé.
+    """
+    with fs.open(path, "rb") as f:
+        df = pd.read_excel(io.BytesIO(f.read()), header=None, dtype=str).fillna("")
+    mask = df.apply(lambda row: row.str.strip().eq("").all(), axis=1)
+    return df[~mask].reset_index(drop=True)
+
+
+# ── Statut des cellules ───────────────────────────────────────────────────────
+
+
+def _norm_num(value: str) -> str:
+    """Normalise un nombre pour la comparaison (espaces, %, signe, parenthèses).
+
+    Args:
+        value: cellule brute.
+
+    Returns:
+        Forme canonique comparable, ou la chaîne d'origine si ce n'est pas un nombre.
+    """
+    s = re.sub(r"[   ]", " ", str(value).strip())
+    neg = False
+    if s.startswith("(") and s.endswith(")"):
+        neg, s = True, s[1:-1].strip()
+    s = E._UNIT_SUFFIX_RE.sub("", s).strip()
+    if re.match(r"^[-−]\s*", s):
+        neg, s = True, re.sub(r"^[-−]\s*", "", s)
+    for _ in range(3):
+        s = re.sub(r"(\d)\s+(\d)", r"\1\2", s)
+    m = re.fullmatch(r"(\d+(?:[,.]\d+)?)\s*%", s)
+    if m:
+        return ("-" if neg else "") + f"{float(m.group(1).replace(',', '.')) / 100:.6g}"
+    if re.fullmatch(r"\d+(?:[,.]\d+)?", s):
+        return ("-" if neg else "") + f"{float(s.replace(',', '.')):.10g}"
+    return ("-" if neg else "") + s
+
+
+def _digits(value: str) -> str:
+    return re.sub(r"[^0-9]", "", str(value))
+
+
+def cell_status(expected: str, got: str | None, elsewhere: bool) -> str:
+    """Qualifie une cellule de la zone de données de l'annotation.
+
+    Args:
+        expected: valeur attendue (annotation).
+        got: valeur prédite à la position appariée, ou None si non appariée.
+        elsewhere: la valeur attendue existe-t-elle ailleurs dans la prédiction.
+
+    Returns:
+        Un des statuts : `ok`, `format`, `ocr`, `deplacee`, `manquante`,
+        `differente`, `non-appariee`, `vide-attendue`.
+    """
+    if E._is_empty(expected):
+        return "vide-attendue"
+    if got is None:
+        return "non-appariee"
+    if _norm_num(expected) == _norm_num(got):
+        return "ok"
+    if E._is_empty(got):
+        return "deplacee" if elsewhere else "manquante"
+    da, dg = _digits(expected), _digits(got)
+    if da and da == dg:
+        return "format"
+    if elsewhere:
+        return "deplacee"
+    if da and dg and E._levenshtein_distance(da, dg) <= 2:
+        return "ocr"
+    return "differente"
+
+
+def build_grid(df: pd.DataFrame, pseudo: Pseudonymizer) -> list[list[str]]:
+    """Convertit une grille en listes de chaînes, entités pseudonymisées.
+
+    La pseudonymisation s'applique à *toutes* les cellules, pas seulement aux colonnes
+    d'en-tête de lignes : une erreur d'alignement — le sujet même de ce site — déplace
+    régulièrement une raison sociale dans une colonne de montants. Les montants ne sont
+    pas affectés, `_is_entity` écartant les valeurs numériques.
+
+    Args:
+        df: grille brute.
+        pseudo: pseudonymiseur.
+
+    Returns:
+        Grille de chaînes, entités remplacées.
+    """
+    return [[pseudo(str(df.iloc[r, c])) for c in range(len(df.columns))] for r in range(len(df))]
+
+
+def compare_pair(ann: pd.DataFrame, pred: pd.DataFrame, pseudo: Pseudonymizer) -> dict | None:
+    """Compare une annotation et une prédiction, cellule par cellule.
+
+    Args:
+        ann: grille annotée de référence.
+        pred: grille prédite.
+        pseudo: pseudonymiseur figé.
+
+    Returns:
+        Dict décrivant les deux grilles, l'appariement et le statut de chaque
+        cellule de la zone de données, ou None si l'une des grilles est vide.
+    """
+    if ann.empty or pred.empty:
+        return None
+
+    ann_hrows = E.detect_column_header_height(ann)
+    ann_hcols = E.detect_row_header_width(ann)
+    pred_hrows = E.detect_column_header_height(pred)
+    pred_hcols = E.detect_row_header_width(pred)
+
+    col_match = E._match_headers(
+        E._build_header_texts(ann, "col", ann_hrows, ann_hcols),
+        E._build_header_texts(pred, "col", pred_hrows, pred_hcols),
+        MATCH_THRESHOLD,
+    )
+    row_match = E._match_headers(
+        E._build_header_texts(ann, "row", ann_hrows, ann_hcols),
+        E._build_header_texts(pred, "row", pred_hrows, pred_hcols),
+        MATCH_THRESHOLD,
+    )
+
+    pred_values = {_norm_num(v) for v in pred.values.ravel()}
+    statuses: dict[str, str] = {}
+    counts: Counter = Counter()
+    for r in range(ann_hrows, len(ann)):
+        for c in range(ann_hcols, len(ann.columns)):
+            val = ann.iloc[r, c]
+            if not E._looks_numeric(val):
+                continue
+            got = None
+            if r in row_match and c in col_match:
+                pr, pc = row_match[r], col_match[c]
+                if pr < len(pred) and pc < len(pred.columns):
+                    got = pred.iloc[pr, pc]
+            status = cell_status(val, got, _norm_num(val) in pred_values)
+            statuses[f"{r},{c}"] = status
+            if status != "vide-attendue":
+                counts[status] += 1
+
+    expected = sum(counts.values())
+    return {
+        "ann": build_grid(ann, pseudo),
+        "pred": build_grid(pred, pseudo),
+        "annHeaderRows": ann_hrows,
+        "annHeaderCols": ann_hcols,
+        "predHeaderRows": pred_hrows,
+        "predHeaderCols": pred_hcols,
+        # _match_headers renvoie des indices numpy (issus d'argsort) : json ne les
+        # sérialise pas, d'où la conversion explicite en int.
+        "rowMatch": {str(k): int(v) for k, v in row_match.items()},
+        "colMatch": {str(k): int(v) for k, v in col_match.items()},
+        "status": statuses,
+        "counts": dict(counts),
+        "expected": expected,
+        "recovered": counts.get("ok", 0),
+        "recoveryRate": (counts.get("ok", 0) / expected) if expected else None,
+        "headerRowsAgree": ann_hrows == pred_hrows,
+    }
+
+
+# ── Assemblage ────────────────────────────────────────────────────────────────
+
+
+def build(limit: int | None = None) -> dict:
+    """Construit le jeu de données complet du site.
+
+    Args:
+        limit: si fourni, ne traite que les N premiers tableaux (itération rapide).
+
+    Returns:
+        Dict sérialisable : métadonnées, liste des tableaux, comparaisons par méthode.
+    """
+    fs = get_s3_fs()
+    print("Lecture des annotations…", flush=True)
+    ann_paths = {Path(p).stem: p for p in fs.glob(f"{S3_ANNOTATIONS}/*.xlsx")}
+    pred_paths = {
+        method: {Path(p).stem: p for p in fs.glob(f"{prefix}/*.csv")}
+        for method, prefix in METHODS.items()
+    }
+    print(
+        f"  {len(ann_paths)} annotations, "
+        + ", ".join(f"{m}: {len(p)}" for m, p in pred_paths.items())
+    )
+
+    names = sorted(ann_paths)
+    if limit:
+        names = names[:limit]
+
+    # L'itération suit l'ordre alphabétique des noms de fichiers : la numérotation des
+    # pseudonymes est donc reproductible d'un build à l'autre, à corpus constant.
+    pseudo = Pseudonymizer()
+    aliaser = FileAliaser()
+    print("Comparaison…", flush=True)
+    tables = []
+    for name in names:
+        alias = aliaser(name)
+        ann = load_xlsx(fs, ann_paths[name])
+        entry = {"id": alias, "methods": {}}
+        for method in METHODS:
+            path = pred_paths[method].get(name)
+            if path is None:
+                continue
+            result = compare_pair(ann, load_csv(fs, path), pseudo)
+            if result is not None:
+                entry["methods"][method] = result
+        if entry["methods"]:
+            # L'annotation est identique d'une méthode à l'autre : on la sort du bloc
+            # par méthode pour ne pas la stocker deux fois.
+            first = next(iter(entry["methods"].values()))
+            entry["ann"] = first.pop("ann")
+            entry["annHeaderRows"] = first["annHeaderRows"]
+            entry["annHeaderCols"] = first["annHeaderCols"]
+            for result in entry["methods"].values():
+                result.pop("ann", None)
+            entry["annRows"] = len(entry["ann"])
+            entry["annCols"] = len(entry["ann"][0]) if entry["ann"] else 0
+            tables.append(entry)
+        print(
+            f"  {alias:<12} "
+            + " ".join(
+                f"{m}={r['recoveryRate']:.0%}" if r.get("recoveryRate") is not None else f"{m}=n/a"
+                for m, r in entry["methods"].items()
+            ),
+            flush=True,
+        )
+
+    payload = {
+        "meta": {
+            "source": f"s3://{BUCKET}/reprise/",
+            "methods": list(METHODS),
+            "nTables": len(tables),
+            "nEntities": pseudo.n_entities,
+            "matchThreshold": MATCH_THRESHOLD,
+            "note": (
+                "Raisons sociales, adresses et SIREN remplacés par des pseudonymes "
+                "stables. Les montants sont ceux extraits, non modifiés."
+            ),
+        },
+        "tables": tables,
+    }
+    return payload
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--limit", type=int, default=None, help="ne traiter que N tableaux")
+    parser.add_argument("--out", type=Path, default=OUT_PATH, help="chemin de sortie JSON")
+    args = parser.parse_args()
+
+    payload = build(limit=args.limit)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+    )
+    size_kb = args.out.stat().st_size / 1024
+    print(
+        f"\n{args.out} — {payload['meta']['nTables']} tableaux, "
+        f"{payload['meta']['nEntities']} entités pseudonymisées, {size_kb:.0f} Ko"
+    )
+
+
+if __name__ == "__main__":
+    main()

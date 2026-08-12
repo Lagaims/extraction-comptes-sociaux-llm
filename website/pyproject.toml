@@ -1,0 +1,20 @@
+[project]
+name = "website"
+version = "0.1.0"
+description = "Site Quarto de diagnostic de l'extraction de tableaux"
+readme = "README.md"
+requires-python = ">=3.13"
+# Le site est statique : Quarto ne rend que du markdown et du JavaScript. Python ne
+# sert qu'à `build_data.py`, qui lit S3 et écrit data/comparaisons.json.
+# `evaluation_extraction` est importé depuis ../scripts par chemin, d'où pandas/numpy ici.
+dependencies = [
+    "extraction-common",
+    "pandas>=3.0.2",
+    "numpy>=2.0.0",
+    "openpyxl>=3.1.0",   # lecture des annotations XLSX
+    "s3fs>=2025.3.0",
+    "python-dotenv>=1.2.2",
+]
+
+[tool.uv.sources]
+extraction-common = { path = "../libs", editable = true }
