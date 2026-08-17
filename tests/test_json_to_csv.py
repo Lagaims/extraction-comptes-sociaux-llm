@@ -13,6 +13,7 @@ from json_to_csv import (
     MarkerTableExtractor,
     _normalize_chandra_table,
     _parse_html_tables,
+    _rectangularize,
 )
 
 
@@ -219,16 +220,100 @@ def test_marker_extractor_traverse_les_blocs_imbriques():
     assert MarkerTableExtractor().extract(data) == [[["Entité A", "1"], ["", "2"]]]
 
 
-# ── chandra : le remplissage à droite reste le comportement documenté ─────────
+# ── rectangularité de la grille produite ─────────────────────────────────────
 
 
-def test_chandra_complete_les_lignes_courtes_a_droite():
-    """Le JSON chandra ne porte aucune information de fusion.
+def test_ligne_courte_completee_a_droite():
+    """Une ligne comptant moins de cellules que les autres est complétée sur place.
 
-    Faute de mieux, `_normalize_chandra_table` complète à droite — ce qui place la
-    sous-ligne d'en-tête à gauche au lieu des colonnes qu'elle qualifie. Ce test fixe
-    le comportement actuel : il devra changer avec le correctif du chemin chandra.
+    Sans cela, la grille sort irrégulière et c'est `_load_csv`, côté évaluation, qui
+    décide où vont les cellules manquantes — alors qu'il ne voit qu'un CSV et n'a aucun
+    moyen de savoir d'où elles viennent.
     """
+    html = """
+    <table><tbody>
+      <tr><td>a</td><td>b</td><td>c</td></tr>
+      <tr><td>1</td></tr>
+    </tbody></table>
+    """
+    assert parse_one(html) == [
+        ["a", "b", "c"],
+        ["1", "", ""],
+    ]
+
+
+def test_toutes_les_grilles_produites_sont_rectangulaires():
+    """L'invariant de sortie du parseur, sur un tableau mêlant fusions et lignes courtes."""
+    html = """
+    <table><tbody>
+      <tr><th rowspan="2">SOCIETES</th><th colspan="2">Valeur d'inventaire</th><th>Note</th></tr>
+      <tr><th>Brute</th><th>Nette</th></tr>
+      <tr><td>Entité A</td><td>1</td></tr>
+    </tbody></table>
+    """
+    grille = parse_one(html)
+    assert len({len(ligne) for ligne in grille}) == 1
+
+
+def test_rectangularize_laisse_une_grille_deja_reguliere_inchangee():
+    grille = [["a", "b"], ["c", "d"]]
+    assert _rectangularize(grille) == grille
+    assert _rectangularize([]) == []
+
+
+# ── sous-lignes d'en-tête : repositionnement sous le libellé détaillé ─────────
+
+
+def test_sous_ligne_entete_replacee_sous_le_libelle_couvrant():
+    """Cas réel chandra : « Brute | Nette » sous « Valeur d'inventaire des titres ».
+
+    La ligne parente compte 11 libellés pour 12 colonnes : un libellé en couvre deux et
+    sa cellule de continuation n'a pas été émise. Complétée à droite, la sous-ligne
+    tomberait en colonnes 0-1, sous « SOCIETES » et « Capital ».
+    """
+    table = [
+        ["SOCIETES", "Capital", "Valeur d'inventaire", "Dividendes"],
+        ["Brute", "Nette"],
+        ["Entité A", "877 668", "1 734 110", "1 700 000", "12"],
+    ]
+    assert _normalize_chandra_table(table) == [
+        ["SOCIETES", "Capital", "Valeur d'inventaire", "", "Dividendes"],
+        ["", "", "Brute", "Nette", ""],
+        ["Entité A", "877 668", "1 734 110", "1 700 000", "12"],
+    ]
+
+
+def test_sous_ligne_entete_de_trois_colonnes():
+    """Le décalage vaut k-1, quel que soit le nombre de sous-colonnes."""
+    table = [
+        ["Filiales", "Valeurs comptables", "Quote-part"],
+        ["Brute", "Nette", "Fair Value"],
+        ["Entité A", "1", "2", "3", "4"],
+    ]
+    assert _normalize_chandra_table(table) == [
+        ["Filiales", "Valeurs comptables", "", "", "Quote-part"],
+        ["", "Brute", "Nette", "Fair Value", ""],
+        ["Entité A", "1", "2", "3", "4"],
+    ]
+
+
+def test_sous_ligne_entete_libelle_couvrant_ambigu_reste_a_droite():
+    """Deux libellés candidats : impossible de trancher, le repli à droite s'applique.
+
+    Mieux vaut le comportement connu qu'un placement arbitraire : ici « Valeur brute »
+    et « Valeur nette » sont déjà deux colonnes distinctes, et rien ne dit laquelle la
+    sous-ligne détaillerait.
+    """
+    table = [
+        ["Filiales", "Valeur brute", "Valeur nette", "Dividendes"],
+        ["a", "b"],
+        ["Entité A", "1", "2", "3", "4"],
+    ]
+    assert _normalize_chandra_table(table)[1] == ["a", "b", "", "", ""]
+
+
+def test_sous_ligne_entete_non_appliquee_si_la_ligne_parente_est_complete():
+    """Une ligne parente déjà à la bonne largeur ne signale aucun libellé couvrant."""
     table = [
         ["SOCIETES", "Capital", "Valeur d'inventaire"],
         ["Brute", "Nette"],
@@ -241,8 +326,39 @@ def test_chandra_complete_les_lignes_courtes_a_droite():
     ]
 
 
+def test_ligne_de_donnees_courte_reste_completee_a_droite():
+    """Le repositionnement ne concerne que la zone d'en-tête, jamais les données."""
+    table = [
+        ["SOCIETES", "Capital", "Valeur d'inventaire"],
+        ["Entité A", "877 668"],
+        ["Entité B", "1 000", "2 000"],
+    ]
+    assert _normalize_chandra_table(table)[1] == ["Entité A", "877 668", ""]
+
+
+# ── chandra : rejet des blocs sans données ────────────────────────────────────
+
+
 def test_chandra_ignore_les_tableaux_sans_ligne_de_donnees():
     assert _normalize_chandra_table([["titre seul"], ["autre"]]) is None
+
+
+def test_chandra_ligne_label_plus_longue_que_les_donnees():
+    """Une ligne-label ne fixe pas la largeur du tableau.
+
+    Certains moteurs émettent l'intertitre de section en fin de ligne, avec autant de
+    cellules vides avant lui. Retenu comme largeur, il ajouterait ces colonnes fantômes
+    à toutes les lignes : c'est l'inverse qui doit se produire, l'intertitre revient en
+    première colonne et le tableau garde la largeur de ses données.
+    """
+    table = [
+        ["", "", "", "intertitre"],
+        ["Entité A", "877 668"],
+    ]
+    assert _normalize_chandra_table(table) == [
+        ["intertitre", ""],
+        ["Entité A", "877 668"],
+    ]
 
 
 def test_chandra_extractor_parcourt_les_pages():

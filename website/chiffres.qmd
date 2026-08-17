@@ -13,10 +13,141 @@ subtitle: "Toutes les mesures du diagnostic, et les cas particuliers rencontrés
 | CSV produits par chandra | 88 |
 | CSV produits par opendataloader | 0 |
 | Paires annotation/prédiction évaluées | 139 |
-| Lignes du parquet d'évaluation | 185 |
 
-Les 185 lignes du parquet couvrent aussi `marker_last_work`, dont les CSV vivent hors
-de `reprise/`, dans `LLM_eval/output_csv/marker_last_work/`.
+Les mesures de cette page sont calculées directement avec les fonctions d'évaluation du
+dépôt, sur les grilles produites par la conversion courante — et non lues dans
+`reprise/eval/evaluation.parquet`, qui reflète un état antérieur du pipeline.
+
+## Erreurs de transcription
+
+C'est le chiffre à poser d'abord, parce qu'il borne tout le reste : si les caractères
+étaient mal lus, aucun travail sur la structure du tableau ne servirait à rien.
+
+```{=html}
+<div class="dx-tiles">
+  <div class="dx-tile">
+    <span class="dx-tile-val">0,8&nbsp;%</span>
+    <span class="dx-tile-lab">des cellules numériques attendues portent une erreur de
+      lecture de chiffres chez marker — 42 sur 5&nbsp;395</span>
+  </div>
+  <div class="dx-tile">
+    <span class="dx-tile-val">1,4&nbsp;%</span>
+    <span class="dx-tile-lab">chez chandra — 75 sur 5&nbsp;414</span>
+  </div>
+  <div class="dx-tile">
+    <span class="dx-tile-val">11&nbsp;/&nbsp;69</span>
+    <span class="dx-tile-lab">fichiers concernés chez marker, 10 sur 70 chez chandra :
+      l'erreur de lecture est concentrée, pas diffuse</span>
+  </div>
+</div>
+```
+
+### Comment ce chiffre est calculé
+
+Il ne sort pas d'une comparaison de chaînes. Une valeur mal placée, ou écrite selon une
+autre convention, serait comptée comme mal lue — d'où six tests appliqués **dans cet
+ordre, de la structure vers la lecture** ; chaque cellule tombe dans la première
+catégorie qui s'applique (`cell_status`, [`website/build_data.py`](https://github.com/InseeFrLab/extraction-comptes-sociaux-llm/blob/main/website/build_data.py)).
+
+1. **Dénominateur.** Les cellules de la zone de données — hors en-têtes localisés par
+   `detect_column_header_height` et `detect_row_header_width` — que `_looks_numeric`
+   reconnaît comme numériques, cellules vides de l'annotation exclues : 5 395 chez
+   marker, 5 414 chez chandra.
+2. **Appariement.** `_match_headers` apparie lignes et colonnes sur la similarité de
+   Levenshtein des libellés (seuil 0,5, matching stable). Sans ligne **et** colonne
+   appariées, on ne sait pas quelle cellule prédite regarder : la cellule sort du compte
+   (statut `non-appariee`) et n'est jamais imputée à la lecture.
+3. **Normalisation.** `_norm_num` ramène à une forme canonique : espaces séparateurs de
+   milliers, virgule ou point décimal, parenthèses comptables converties en signe,
+   suffixes d'unité, `%` converti en décimale. Égalité → cellule récupérée.
+4. **Test hors position.** La valeur attendue existe-t-elle **ailleurs** dans la grille
+   prédite ? L'ensemble `{_norm_num(v) for v in pred.values.ravel()}` ignore
+   complètement la grille. Si elle y est, la lecture est bonne et c'est le placement qui
+   a échoué (`deplacee`). **C'est ce test qui empêche d'imputer un décalage de colonne à
+   l'OCR.**
+5. **Clé chiffres.** `_digits()` ne garde que les chiffres. S'ils sont identiques alors
+   que les formes normalisées diffèrent, l'écart est une convention d'écriture, pas une
+   lecture.
+6. **Distance.** Distance de Levenshtein sur les chiffres ≤ 2 → **erreur de lecture**.
+   Au-delà, la cellule est classée « valeur franchement différente » : trop loin pour
+   qu'on puisse affirmer qu'il s'agit du même nombre mal lu.
+
+::: {.callout-note appearance="simple"}
+## Le piège du signe `%`
+
+`_norm_num` retirait le `%` avec les autres suffixes d'unité (`€`, `NOK`) **avant** la
+conversion en décimale. `0,7` attendu contre `70%` prédit devenait donc `0.7` contre
+`70` : deux chiffres d'écart, donc une erreur de lecture. Cette seule confusion gonflait
+le compte de 64 cellules chez marker et 69 chez chandra — 2,0 % et 2,7 % au lieu de
+0,8 % et 1,4 %. Corrigé dans `build_data.py` ; cette section et la [décomposition
+complète](#décomposition-des-cellules-attendues) intègrent la correction.
+:::
+
+### Nature des erreurs
+
+::: {.dx-scroll}
+
+| Nature | marker | chandra | Exemple observé |
+|---|---:|---:|---|
+| Un chiffre substitué | 27 | 50 | `21 163` → `22 163` |
+| Autre écart de un ou deux chiffres | 7 | 22 | `304 501` → `304 519` |
+| Troncature en fin de cellule | 6 | 0 | `6 817 282` → `6 817 28` |
+| Chiffres permutés | 2 | 3 | `469 453` → `469 543` |
+| **Total** | **42** | **75** | |
+
+:::
+
+Aucune de ces erreurs n'est un échec de reconnaissance de caractère franc : ce sont des
+chiffres voisins sur un scan dégradé, ou un caractère perdu en bord de cellule.
+
+### Où elles se concentrent
+
+Chez marker, 11 fichiers sur 69 portent au moins une erreur de lecture, et `384518114_1`
+en concentre 14 à lui seul. Chez chandra, 10 fichiers sur 70, dont `TAB_347922809_1` qui
+en porte 40 des 75. Ce n'est donc pas un OCR globalement fragile, mais quelques
+documents mal numérisés : le levier est du côté de la qualité de l'image en entrée, pas
+du modèle.
+
+### Ce que ce chiffre ne compte pas
+
+Trois postes relèvent aussi de la lecture mais sont comptés à part, parce que leur cause
+n'est pas la même :
+
+::: {.dx-scroll}
+
+| Poste | marker | chandra | Pourquoi à part |
+|---|---:|---:|---|
+| Cellule vide, valeur nulle part | 170 | 9 | La cellule n'a pas été lue du tout |
+| Texte à la place du nombre | 0 | 33 | La prédiction ne contient aucun chiffre |
+| Valeur franchement différente | 27 | 27 | Plus de deux chiffres d'écart : origine indécidable |
+
+:::
+
+Total du poste « Lecture » : **4,4 % des cellules chez marker, 2,7 % chez chandra** — à
+comparer aux 44,7 % et 39,2 % du poste « Structure » ([décomposition
+complète](#décomposition-des-cellules-attendues)).
+
+Une part du résidu n'est d'ailleurs pas imputable au moteur : `862 00` attendu contre
+`862 000` prédit, ou `35 0380 200` contre `35 038 200`, sont des coquilles de
+l'annotation où la prédiction est probablement juste.
+
+### Bien lu, écrit autrement
+
+515 des 2 740 cellules récupérées chez marker (18,8 %) et 518 des 3 147 chez chandra
+(16,5 %) ne sont identiques qu'**après** normalisation :
+
+::: {.dx-scroll}
+
+| Écart | marker | chandra | Exemple |
+|---|---:|---:|---|
+| Séparateur de milliers seul | 331 | 336 | `3342864` → `3 342 864` |
+| Virgule contre point décimal | 33 | 32 | `2.08` → `2,08` |
+| Autre convention | 151 | 150 | `1` → `100%`, `1 976` → `(1 976)` |
+
+:::
+
+Aucune n'est une erreur de lecture — mais toutes le deviendraient si la comparaison se
+faisait caractère par caractère. C'est la mesure de ce que l'étape 3 rattrape.
 
 ## Métriques publiées
 
@@ -29,28 +160,24 @@ pondérant par cellule et non par fichier — voir
 
 | Méthode | Paires | `col_recovery` | `row_recovery` | `numeric_recovery` | hors vides, /cellule | `total_extraction` |
 |---|---:|---:|---:|---:|---:|---:|
-| **marker** (après correctif `rowspan`) | 69 | **0,824** | **0,815** | **0,695** | **0,484** | **0,362** |
-| marker (avant correctif) | 69 | 0,781 | 0,799 | 0,646 | 0,420 | 0,261 |
-| chandra | 70 | 0,837 | 0,840 | 0,627 | 0,390 | 0,300 |
+| **marker** | 69 | **0,824** | **0,815** | **0,695** | **0,508** | **0,362** |
+| **chandra** | 70 | **0,873** | **0,857** | **0,744** | **0,581** | **0,371** |
 | marker_last_work | 46 | 0,698 | 0,657 | 0,431 | — | 0,043 |
 | opendataloader | 0 | — | — | — | — | — |
 
 :::
 
 ::: {.callout-note appearance="simple"}
-## État des sources
+## Lecture des chiffres
 
-Les CSV de `reprise/output_csv/marker/` ont été régénérés avec le correctif `rowspan` ;
-les versions antérieures sont conservées dans `reprise/output_csv/marker_pre_rowspan/`.
-La ligne « avant correctif » est calculée sur cette sauvegarde et reproduit exactement les
-valeurs de `reprise/eval/evaluation.parquet`, **qui n'a pas encore été régénéré**. Les
-chiffres de chandra et de `marker_last_work` sont inchangés.
-
-Toutes les mesures marker de cette page sont données avant et après correctif.
+Les lignes `marker_last_work` et `opendataloader` proviennent du parquet d'évaluation et
+n'ont pas été recalculées : la première est appariée par un chemin de code distinct dont
+la fiabilité reste à établir (voir [plus bas](#marker_last_work-régression-ou-appariement-cassé)),
+la seconde ne produit aucun CSV.
 :::
 
 Les médianes sont nettement au-dessus des moyennes : `numeric_recovery` médian vaut
-**0,874 pour marker** (moyenne 0,695) et **0,729 pour chandra** (moyenne 0,627). Cet écart
+**0,874 pour marker** (moyenne 0,695) et **0,958 pour chandra** (moyenne 0,744). Cet écart
 n'est pas un détail statistique — il dit que le tableau *typique* est bien mieux extrait que
 ne le laisse croire la moyenne, parce qu'une minorité de tableaux à zéro tire celle-ci vers
 le bas.
@@ -82,62 +209,64 @@ les petits. Les cellules vides de l'annotation sont exclues, pour les raisons ex
     tableau, les colonnes appariées, les lignes appariées et les cellules numériques
     récupérées, rapportés au total attendu.</p>
   <div class="dx-legend">
-    <span><span class="dx-swatch" style="background:var(--dx-marker)"></span>marker (après correctif <code>rowspan</code>) — 69 tableaux</span>
+    <span><span class="dx-swatch" style="background:var(--dx-marker)"></span>marker — 69 tableaux</span>
     <span><span class="dx-swatch" style="background:var(--dx-chandra)"></span>chandra — 70 tableaux</span>
   </div>
   <div class="dx-hist">
     <div class="dx-hist-yaxis">
       <div class="dx-hist-ytick" style="bottom:0.0%">0</div>
-      <div class="dx-hist-ytick" style="bottom:25.0%">10</div>
-      <div class="dx-hist-ytick" style="bottom:50.0%">20</div>
-      <div class="dx-hist-ytick" style="bottom:75.0%">30</div>
-      <div class="dx-hist-ytick" style="bottom:100.0%">40</div>
+      <div class="dx-hist-ytick" style="bottom:20.0%">10</div>
+      <div class="dx-hist-ytick" style="bottom:40.0%">20</div>
+      <div class="dx-hist-ytick" style="bottom:60.0%">30</div>
+      <div class="dx-hist-ytick" style="bottom:80.0%">40</div>
+      <div class="dx-hist-ytick" style="bottom:100.0%">50</div>
     </div>
     <div class="dx-hist-plot">
-        <div class="dx-hist-grid" style="bottom:25.0%"></div>
-        <div class="dx-hist-grid" style="bottom:50.0%"></div>
-        <div class="dx-hist-grid" style="bottom:75.0%"></div>
+        <div class="dx-hist-grid" style="bottom:20.0%"></div>
+        <div class="dx-hist-grid" style="bottom:40.0%"></div>
+        <div class="dx-hist-grid" style="bottom:60.0%"></div>
+        <div class="dx-hist-grid" style="bottom:80.0%"></div>
         <div class="dx-hist-grid" style="bottom:100.0%"></div>
       <div class="dx-hist-bins">
         <div class="dx-hist-bin">
-          <div class="dx-hist-bar" style="height:20.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 0–10 % de score : 8 tableaux" data-label="8"></div>
-          <div class="dx-hist-bar" style="height:12.5%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 0–10 % de score : 5 tableaux" data-label="5"></div>
+          <div class="dx-hist-bar" style="height:16.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 0–10 % de score : 8 tableaux" data-label="8"></div>
+          <div class="dx-hist-bar" style="height:10.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 0–10 % de score : 5 tableaux"></div>
         </div>
         <div class="dx-hist-bin">
-          <div class="dx-hist-bar" style="height:2.5%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 10–20 % de score : 1 tableau"></div>
-          <div class="dx-hist-bar" style="height:15.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 10–20 % de score : 6 tableaux"></div>
+          <div class="dx-hist-bar" style="height:2.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 10–20 % de score : 1 tableau"></div>
+          <div class="dx-hist-bar" style="height:10.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 10–20 % de score : 5 tableaux"></div>
         </div>
         <div class="dx-hist-bin">
-          <div class="dx-hist-bar" style="height:5.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 20–30 % de score : 2 tableaux"></div>
-          <div class="dx-hist-bar" style="height:5.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 20–30 % de score : 2 tableaux"></div>
+          <div class="dx-hist-bar" style="height:4.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 20–30 % de score : 2 tableaux"></div>
+          <div class="dx-hist-bar" style="height:4.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 20–30 % de score : 2 tableaux"></div>
         </div>
         <div class="dx-hist-bin">
-          <div class="dx-hist-bar" style="height:2.5%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 30–40 % de score : 1 tableau"></div>
-          <div class="dx-hist-bar" style="height:7.5%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 30–40 % de score : 3 tableaux"></div>
+          <div class="dx-hist-bar" style="height:2.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 30–40 % de score : 1 tableau"></div>
+          <div class="dx-hist-bar" style="height:0.0%;background:var(--dx-chandra)" data-tip="chandra — 30–40 % de score : aucun tableau"></div>
         </div>
         <div class="dx-hist-bin">
-          <div class="dx-hist-bar" style="height:5.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 40–50 % de score : 2 tableaux"></div>
-          <div class="dx-hist-bar" style="height:7.5%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 40–50 % de score : 3 tableaux"></div>
+          <div class="dx-hist-bar" style="height:2.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 40–50 % de score : 1 tableau"></div>
+          <div class="dx-hist-bar" style="height:4.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 40–50 % de score : 2 tableaux"></div>
         </div>
         <div class="dx-hist-bin">
-          <div class="dx-hist-bar" style="height:10.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 50–60 % de score : 4 tableaux"></div>
-          <div class="dx-hist-bar" style="height:10.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 50–60 % de score : 4 tableaux"></div>
+          <div class="dx-hist-bar" style="height:10.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 50–60 % de score : 5 tableaux"></div>
+          <div class="dx-hist-bar" style="height:2.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 50–60 % de score : 1 tableau"></div>
         </div>
         <div class="dx-hist-bin">
-          <div class="dx-hist-bar" style="height:7.5%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 60–70 % de score : 3 tableaux"></div>
-          <div class="dx-hist-bar" style="height:20.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 60–70 % de score : 8 tableaux"></div>
+          <div class="dx-hist-bar" style="height:2.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 60–70 % de score : 1 tableau"></div>
+          <div class="dx-hist-bar" style="height:6.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 60–70 % de score : 3 tableaux"></div>
         </div>
         <div class="dx-hist-bin">
-          <div class="dx-hist-bar" style="height:15.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 70–80 % de score : 6 tableaux"></div>
-          <div class="dx-hist-bar" style="height:12.5%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 70–80 % de score : 5 tableaux"></div>
+          <div class="dx-hist-bar" style="height:14.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 70–80 % de score : 7 tableaux"></div>
+          <div class="dx-hist-bar" style="height:4.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 70–80 % de score : 2 tableaux"></div>
         </div>
         <div class="dx-hist-bin">
-          <div class="dx-hist-bar" style="height:20.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 80–90 % de score : 8 tableaux"></div>
-          <div class="dx-hist-bar" style="height:10.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 80–90 % de score : 4 tableaux"></div>
+          <div class="dx-hist-bar" style="height:16.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 80–90 % de score : 8 tableaux" data-label="8"></div>
+          <div class="dx-hist-bar" style="height:10.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 80–90 % de score : 5 tableaux"></div>
         </div>
         <div class="dx-hist-bin">
-          <div class="dx-hist-bar" style="height:85.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 90–100 % de score : 34 tableaux" data-label="34"></div>
-          <div class="dx-hist-bar" style="height:75.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 90–100 % de score : 30 tableaux" data-label="30"></div>
+          <div class="dx-hist-bar" style="height:70.0%;background:var(--dx-marker)" tabindex="0" data-tip="marker — 90–100 % de score : 35 tableaux" data-label="35"></div>
+          <div class="dx-hist-bar" style="height:90.0%;background:var(--dx-chandra)" tabindex="0" data-tip="chandra — 90–100 % de score : 45 tableaux" data-label="45"></div>
         </div>
       </div>
     </div>
@@ -161,10 +290,10 @@ les petits. Les cellules vides de l'annotation sont exclues, pour les raisons ex
       <div class="dx-hist-marker"></div>
       <div class="dx-hist-marker"></div>
       <div class="dx-hist-marker"></div>
-      <div class="dx-hist-marker"><span>▲ moyenne</span><span>chandra 0,685</span></div>
-      <div class="dx-hist-marker"><span>▲ médiane</span><span>chandra 0,769</span></div>
-      <div class="dx-hist-marker"><span>▲ médiane</span><span>marker 0,889</span></div>
-      <div class="dx-hist-marker"></div>
+      <div class="dx-hist-marker"><span>▲ moyenne</span><span>marker 0,749</span></div>
+      <div class="dx-hist-marker"><span>▲ moyenne</span><span>chandra 0,784</span></div>
+      <div class="dx-hist-marker"><span>▲ médiane</span><span>marker 0,926</span></div>
+      <div class="dx-hist-marker"><span>▲ médiane</span><span>chandra 0,988</span></div>
     </div>
   </div>
   <figcaption class="dx-fig-note">Les effectifs se massent aux deux extrémités et se creusent
@@ -177,19 +306,19 @@ les petits. Les cellules vides de l'annotation sont exclues, pour les raisons ex
 
 ::: {.dx-scroll}
 
-| Tranche de score | marker avant | marker après | chandra |
-|---|---:|---:|---:|
-| 0–10 % | 8 | 8 | 5 |
-| 10–20 % | 2 | 1 | 6 |
-| 20–30 % | 1 | 2 | 2 |
-| 30–40 % | 3 | 1 | 3 |
-| 40–50 % | 2 | 2 | 3 |
-| 50–60 % | 5 | 4 | 4 |
-| 60–70 % | 2 | 3 | 8 |
-| 70–80 % | 9 | 6 | 5 |
-| 80–90 % | 13 | 8 | 4 |
-| 90–100 % | 24 | 34 | 30 |
-| **Total** | **69** | **69** | **70** |
+| Tranche de score | marker | chandra |
+|---|---:|---:|
+| 0–10 % | 8 | 5 |
+| 10–20 % | 1 | 5 |
+| 20–30 % | 2 | 2 |
+| 30–40 % | 1 | 0 |
+| 40–50 % | 1 | 2 |
+| 50–60 % | 5 | 1 |
+| 60–70 % | 1 | 3 |
+| 70–80 % | 7 | 2 |
+| 80–90 % | 8 | 5 |
+| 90–100 % | 35 | 45 |
+| **Total** | **69** | **70** |
 
 : Effectifs par tranche. Un tableau dont toutes les lignes, toutes les colonnes et toutes les valeurs numériques sont correctes obtient 100 %.
 
@@ -199,21 +328,21 @@ La forme est franchement bimodale, et elle l'est pour les deux moteurs :
 
 ::: {.dx-scroll}
 
-| | marker avant | marker après | chandra |
-|---|---:|---:|---:|
-| Score exactement 100 % | 18 | **25** | 21 |
-| Score sous 5 % | 8 | 8 | 5 |
-| Tranches extrêmes (< 20 % ou ≥ 80 %) | 47 (68 %) | **51 (74 %)** | 45 (64 %) |
-| Milieu (20–80 %) | 22 (32 %) | 18 (26 %) | 25 (36 %) |
-| Moyenne du score | 0,693 | **0,742** | 0,685 |
-| Médiane du score | 0,812 | **0,889** | 0,769 |
+| | marker | chandra |
+|---|---:|---:|
+| Score exactement 100 % | 26 | 30 |
+| Score sous 5 % | 8 | 5 |
+| Tranches extrêmes (< 20 % ou ≥ 80 %) | 52 (75 %) | 60 (86 %) |
+| Milieu (20–80 %) | 17 (25 %) | 10 (14 %) |
+| Moyenne du score | 0,749 | 0,784 |
+| Médiane du score | 0,926 | 0,988 |
 
 :::
 
 Trois lectures s'en dégagent.
 
-**L'échec est tout-ou-rien.** Un quart des tableaux marker sont extraits parfaitement, et
-8 le sont à moins de 5 %. Le creux au milieu montre qu'un tableau rate rarement « un peu » :
+**L'échec est tout-ou-rien.** 26 tableaux marker et 30 chandra sont extraits parfaitement,
+8 et 5 le sont à moins de 5 %. Le creux au milieu montre qu'un tableau rate rarement « un peu » :
 soit la structure tient et presque tout suit, soit elle se décale et tout tombe. C'est la
 signature d'une erreur de structure propagée, pas d'une dégradation graduelle de la lecture.
 
@@ -222,9 +351,10 @@ mélange deux populations et bouge autant selon le nombre de tableaux nuls que s
 qualité réelle. La médiane, ou mieux le comptage des tableaux au-dessus d'un seuil, décrit
 plus fidèlement ce qu'un utilisateur constate.
 
-**Le correctif `rowspan` déplace la masse vers le haut sans vider le bas.** Les tableaux
-parfaits passent de 18 à 25, mais les 8 tableaux à moins de 5 % restent : ce sont les
-tableaux découpés et les écarts de structure en amont, que ce correctif ne touche pas.
+**Le bas de la distribution résiste.** Les tableaux à moins de 5 % ne sont pas des
+tableaux mal lus : ce sont des tableaux découpés par le moteur, comparés à la mauvaise
+annotation, et des écarts de structure d'en-tête présents dès la source. Aucune règle de
+mise en forme ne les rattrape.
 
 ## Entonnoir d'attrition
 
@@ -250,33 +380,25 @@ valeurs d'au moins quatre chiffres.
       <div class="dx-bar-row">
         <div class="dx-bar-lab">Lues quelque part dans le SIREN</div>
         <div class="dx-bar-track">
-          <div class="dx-bar" style="width:89.9%;background:var(--dx-ord-2)"></div>
-          <span class="dx-bar-val">89,9&nbsp;% <span class="dx-n">· 2 749</span></span>
-          <span class="dx-bar-loss">−10,1 pts</span>
+          <div class="dx-bar" style="width:90.7%;background:var(--dx-ord-2)"></div>
+          <span class="dx-bar-val">90,7&nbsp;% <span class="dx-n">· 2 776</span></span>
+          <span class="dx-bar-loss">−9,3 pts</span>
         </div>
       </div>
       <div class="dx-bar-row">
         <div class="dx-bar-lab">Dans le bon CSV</div>
         <div class="dx-bar-track">
-          <div class="dx-bar" style="width:75.3%;background:var(--dx-ord-3)"></div>
-          <span class="dx-bar-val">75,3&nbsp;% <span class="dx-n">· 2 302</span></span>
-          <span class="dx-bar-loss">−14,6 pts</span>
+          <div class="dx-bar" style="width:76.4%;background:var(--dx-ord-3)"></div>
+          <span class="dx-bar-val">76,4&nbsp;% <span class="dx-n">· 2 337</span></span>
+          <span class="dx-bar-loss">−14,3 pts</span>
         </div>
       </div>
       <div class="dx-bar-row">
-        <div class="dx-bar-lab">À la bonne cellule<br><span style="color:var(--dx-muted)">avant correctif</span></div>
+        <div class="dx-bar-lab">À la bonne cellule</div>
         <div class="dx-bar-track">
-          <div class="dx-bar" style="width:43.0%;background:var(--dx-ord-4)"></div>
-          <span class="dx-bar-val">43,0&nbsp;% <span class="dx-n">· 1 314</span></span>
-          <span class="dx-bar-loss">−32,3 pts</span>
-        </div>
-      </div>
-      <div class="dx-bar-row">
-        <div class="dx-bar-lab">À la bonne cellule<br><span style="color:var(--dx-muted)">après correctif <code>rowspan</code></span></div>
-        <div class="dx-bar-track">
-          <div class="dx-bar" style="width:51.5%;background:var(--dx-marker)"></div>
-          <span class="dx-bar-val">51,5&nbsp;% <span class="dx-n">· 1 576</span></span>
-          <span class="dx-bar-val" style="color:var(--dx-st-ok-ink)">+8,5 pts</span>
+          <div class="dx-bar" style="width:52.3%;background:var(--dx-marker)"></div>
+          <span class="dx-bar-val">52,3&nbsp;% <span class="dx-n">· 1 599</span></span>
+          <span class="dx-bar-loss">−24,1 pts</span>
         </div>
       </div>
     </div>
@@ -294,34 +416,32 @@ valeurs d'au moins quatre chiffres.
       <div class="dx-bar-row">
         <div class="dx-bar-lab">Lues quelque part dans le SIREN</div>
         <div class="dx-bar-track">
-          <div class="dx-bar" style="width:92.8%;background:var(--dx-ord-2)"></div>
-          <span class="dx-bar-val">92,8&nbsp;% <span class="dx-n">· 2 857</span></span>
-          <span class="dx-bar-loss">−7,2 pts</span>
+          <div class="dx-bar" style="width:93.8%;background:var(--dx-ord-2)"></div>
+          <span class="dx-bar-val">93,8&nbsp;% <span class="dx-n">· 2 889</span></span>
+          <span class="dx-bar-loss">−6,2 pts</span>
         </div>
       </div>
       <div class="dx-bar-row">
         <div class="dx-bar-lab">Dans le bon CSV</div>
         <div class="dx-bar-track">
-          <div class="dx-bar" style="width:80.4%;background:var(--dx-ord-3)"></div>
-          <span class="dx-bar-val">80,4&nbsp;% <span class="dx-n">· 2 475</span></span>
-          <span class="dx-bar-loss">−12,4 pts</span>
+          <div class="dx-bar" style="width:81.7%;background:var(--dx-ord-3)"></div>
+          <span class="dx-bar-val">81,7&nbsp;% <span class="dx-n">· 2 515</span></span>
+          <span class="dx-bar-loss">−12,1 pts</span>
         </div>
       </div>
       <div class="dx-bar-row">
         <div class="dx-bar-lab">À la bonne cellule</div>
         <div class="dx-bar-track">
-          <div class="dx-bar" style="width:36.7%;background:var(--dx-ord-4)"></div>
-          <span class="dx-bar-val">36,7&nbsp;% <span class="dx-n">· 1 130</span></span>
-          <span class="dx-bar-loss">−43,7 pts</span>
+          <div class="dx-bar" style="width:55.2%;background:var(--dx-chandra)"></div>
+          <span class="dx-bar-val">55,2&nbsp;% <span class="dx-n">· 1 699</span></span>
+          <span class="dx-bar-loss">−26,5 pts</span>
         </div>
       </div>
     </div>
   </div>
   <figcaption class="dx-fig-note">Les deux moteurs perdent au même endroit. La marche la
     plus haute est la dernière : la valeur est dans le bon fichier, mais pas dans la
-    bonne case. Le correctif <code>rowspan</code> attaque exactement cette marche — il ne
-    change rien aux trois premières étapes, puisqu'il ne modifie pas ce que l'OCR lit,
-    seulement l'endroit où la valeur atterrit.</figcaption>
+    bonne case. C'est un problème de structure, pas de lecture.</figcaption>
 </figure>
 ```
 
@@ -329,66 +449,68 @@ Table des mêmes données, pour lecture directe :
 
 ::: {.dx-scroll}
 
-| Étape | marker avant | % | marker après | % | chandra | % |
-|---|---:|---:|---:|---:|---:|---:|
-| Attendues (≥ 4 chiffres) | 3 059 | 100,0 | 3 059 | 100,0 | 3 080 | 100,0 |
-| Lues quelque part dans le SIREN | 2 749 | 89,9 | 2 749 | 89,9 | 2 857 | 92,8 |
-| Dans le bon CSV | 2 302 | 75,3 | 2 302 | 75,3 | 2 475 | 80,4 |
-| À la bonne cellule | 1 314 | 43,0 | **1 576** | **51,5** | 1 130 | 36,7 |
+| Étape | marker | % | chandra | % |
+|---|---:|---:|---:|---:|
+| Attendues (≥ 4 chiffres) | 3 059 | 100,0 | 3 080 | 100,0 |
+| Lues quelque part dans le SIREN | 2 776 | 90,7 | 2 889 | 93,8 |
+| Dans le bon CSV | 2 337 | 76,4 | 2 515 | 81,7 |
+| À la bonne cellule | **1 599** | **52,3** | **1 699** | **55,2** |
 
-: Les trois premières étapes sont inchangées par le correctif `rowspan` — il ne modifie
-pas ce que l'OCR lit, seulement l'endroit où la valeur atterrit. Tout le gain se
-concentre sur la dernière marche.
+: Les deux premières marches mesurent la lecture, la troisième l'appariement des tableaux
+entre eux, la dernière le placement dans la grille. C'est la dernière qui coûte le plus.
 
 :::
 
-## Décomposition des 5 395 cellules attendues
+## Décomposition des cellules attendues
 
 Vue exhaustive sur les cellules numériques **non vides** de la zone de données, tous
-fichiers confondus. Les colonnes marker sont données avant et après le correctif
-`rowspan`.
+fichiers confondus : 5 395 pour marker, 5 414 pour chandra. Une cellule est classée dans
+la première catégorie qui s'applique, de la structure vers la lecture.
 
 ::: {.dx-scroll}
 
-| Devenir de la cellule | marker avant | % | marker après | % | chandra | % | Nature |
-|---|---:|---:|---:|---:|---:|---:|---|
-| **Récupérée** | **2 264** | **42,0** | **2 613** | **48,4** | 2 133 | 39,4 | — |
-| Ligne *et* colonne non appariées | 991 | 18,4 | 938 | 17,4 | 711 | 13,1 | Structure |
-| Colonne non appariée | 613 | 11,4 | **311** | **5,8** | 744 | 13,7 | Structure |
-| Ligne non appariée | 557 | 10,3 | 602 | 11,2 | 213 | 3,9 | Structure |
-| Bonne ligne, colonne décalée | 252 | 4,7 | 184 | 3,4 | 1 147 | 21,2 | Structure |
-| Cellule vide, valeur présente ailleurs | 298 | 5,5 | 291 | 5,4 | 193 | 3,6 | Structure |
-| Autre décalage | 125 | 2,3 | 137 | 2,5 | 92 | 1,7 | Structure |
-| Cellule vide, valeur nulle part | 166 | 3,1 | 170 | 3,2 | 9 | 0,2 | Lecture |
-| Format seul | 2 | 0,0 | 2 | 0,0 | 31 | 0,6 | Normalisation |
-| Erreur de lecture de chiffres | 94 | 1,7 | 106 | 2,0 | 40 | 0,7 | Lecture |
-| Texte à la place du nombre | 0 | 0,0 | 0 | 0,0 | 33 | 0,6 | Lecture |
-| Valeur franchement différente | 33 | 0,6 | 41 | 0,8 | 68 | 1,3 | Lecture |
-| **Total** | **5 395** | **100** | **5 395** | **100** | **5 414** | **100** | |
+| Devenir de la cellule | marker | % | chandra | % | Nature |
+|---|---:|---:|---:|---:|---|
+| **Récupérée** | **2 740** | **50,8** | **3 147** | **58,1** | — |
+| Ligne *et* colonne non appariées | 938 | 17,4 | 708 | 13,1 | Structure |
+| Colonne non appariée | 311 | 5,8 | 445 | 8,2 | Structure |
+| Ligne non appariée | 602 | 11,2 | 216 | 4,0 | Structure |
+| Bonne ligne, colonne décalée | 177 | 3,3 | 547 | 10,1 | Structure |
+| Cellule vide, valeur présente ailleurs | 291 | 5,4 | 111 | 2,1 | Structure |
+| Autre décalage | 95 | 1,8 | 96 | 1,8 | Structure |
+| Cellule vide, valeur nulle part | 170 | 3,2 | 9 | 0,2 | Lecture |
+| Format seul | 2 | 0,0 | 0 | 0,0 | Normalisation |
+| Erreur de lecture de chiffres | 42 | 0,8 | 75 | 1,4 | Lecture |
+| Texte à la place du nombre | 0 | 0,0 | 33 | 0,6 | Lecture |
+| Valeur franchement différente | 27 | 0,5 | 27 | 0,5 | Lecture |
+| **Total** | **5 395** | **100** | **5 414** | **100** | |
 
 :::
 
-Le poste qui s'effondre est « colonne non appariée » : de 613 à 311 cellules, soit une
-division par deux. C'est la signature attendue du correctif — une colonne dont les
-sous-en-têtes étaient décalés redevient appariable.
+**Les postes « Structure » pèsent 44,7 % chez marker et 39,2 % chez chandra ; les postes
+« Lecture », 4,4 % et 2,7 %.** Le rapport est de l'ordre de dix contre un : à quantité
+égale d'effort, corriger l'alignement rapporte dix fois plus que corriger l'OCR.
 
-Deux postes augmentent légèrement, et c'est logique : « erreur de lecture de chiffres »
-(94 → 106) et « valeur franchement différente » (33 → 41). Des cellules auparavant
-perdues faute d'appariement sont désormais comparées, et une partie d'entre elles est
-effectivement fausse. Le total des erreurs de lecture reste sous 3 %.
+Le poste « Format seul » est quasi vide parce que `_norm_num` absorbe ces écarts en
+amont : les cellules concernées comptent comme récupérées, et sont dénombrées dans
+[« Bien lu, écrit autrement »](#bien-lu-écrit-autrement).
+
+Les deux moteurs échouent différemment. Chez marker, la structure entière décroche —
+17,4 % des cellules ont leur ligne *et* leur colonne non appariées. Chez chandra, l'échec
+est plus souvent local : 10,1 % des cellules sont sur la bonne ligne mais à une colonne
+de là, contre 3,2 % chez marker.
 
 ### Exemples par catégorie
 
-Cas réels observés dans les sorties marker. Les libellés sont pseudonymisés, les
-montants sont ceux extraits.
+Cas réels observés dans les sorties marker, valeurs telles qu'extraites.
 
 ::: {.dx-scroll}
 
 | Catégorie | Attendu | Prédit | Ce qui s'est passé |
 |---|---|---|---|
-| Format seul | `2.08` | `2,08` | Décimale point contre virgule |
-| Format seul | `- 30 000` | `-30 000` | Signe négatif détaché du nombre |
-| Format seul | `1 976` | `(1 976)` | Parenthèses comptables non interprétées |
+| Écriture seule, comptée récupérée | `2.08` | `2,08` | Décimale point contre virgule |
+| Écriture seule, comptée récupérée | `- 30 000` | `-30 000` | Signe négatif détaché du nombre |
+| Signe seul, comptée « format seul » | `1 976` | `(1 976)` | Parenthèses lues comme un négatif : mêmes chiffres, signe opposé |
 | Erreur de chiffres | `21 163` | `22 163` | Un chiffre mal lu |
 | Erreur de chiffres | `469 453` | `469 543` | Deux chiffres permutés |
 | Erreur de chiffres | `136 917 522` | `136 917 527` | Dernier chiffre mal lu |
@@ -405,18 +527,21 @@ montants sont ceux extraits.
 
 ## Effet de la taille du tableau
 
-Quartiles du nombre de cellules de l'annotation, méthode marker. La qualité s'effondre
-avec la taille : c'est le signe que l'échec est structurel — un grand tableau offre
-plus d'occasions de décaler l'en-tête, et un décalage coûte tout le tableau.
+Quartiles du nombre de cellules de l'annotation. La qualité s'effondre avec la taille :
+c'est le signe que l'échec est structurel — un grand tableau offre plus d'occasions de
+décaler l'en-tête, et un décalage coûte tout le tableau.
 
 ::: {.dx-scroll}
 
-| Cellules de l'annotation | `numeric_recovery` avant | après | `total_extraction` avant | après |
+| Quartile de taille | marker, `numeric_recovery` | `total_extraction` | chandra, `numeric_recovery` | `total_extraction` |
 |---|---:|---:|---:|---:|
-| 4 à 40 | 0,903 | 0,903 | 0,789 | 0,789 |
-| 41 à 102 | 0,722 | **0,786** | 0,188 | **0,500** |
-| 103 à 260 | 0,513 | **0,578** | 0,000 | **0,118** |
-| 261 à 726 | 0,445 | **0,517** | 0,000 | 0,000 |
+| Q1 — 4 à 40 cellules | 0,903 | 0,789 | 0,987 | 0,850 |
+| Q2 — 42 à 102 cellules | 0,786 | 0,500 | 0,886 | 0,400 |
+| Q3 — 103 à 260 cellules | 0,578 | 0,118 | 0,622 | 0,176 |
+| Q4 — 261 à 726 cellules | 0,517 | 0,000 | 0,492 | 0,000 |
+
+: Les bornes des quartiles diffèrent de quelques cellules entre les deux moteurs ; elles
+sont données ici d'après le découpage marker.
 
 :::
 
@@ -445,15 +570,15 @@ plus basse que la moyenne publiée.
       <div class="dx-bar-row">
         <div class="dx-bar-lab">marker</div>
         <div class="dx-bar-track">
-          <div class="dx-bar" style="width:77.9%;background:var(--dx-marker)"></div>
-          <span class="dx-bar-val">77,9&nbsp;%</span>
+          <div class="dx-bar" style="width:62.1%;background:var(--dx-marker)"></div>
+          <span class="dx-bar-val">62,1&nbsp;%</span>
         </div>
       </div>
       <div class="dx-bar-row">
         <div class="dx-bar-lab">chandra</div>
         <div class="dx-bar-track">
-          <div class="dx-bar" style="width:71.6%;background:var(--dx-chandra)"></div>
-          <span class="dx-bar-val">71,6&nbsp;%</span>
+          <div class="dx-bar" style="width:73.0%;background:var(--dx-chandra)"></div>
+          <span class="dx-bar-val">73,0&nbsp;%</span>
         </div>
       </div>
     </div>
@@ -464,20 +589,20 @@ plus basse que la moyenne publiée.
       <div class="dx-bar-row">
         <div class="dx-bar-lab">marker</div>
         <div class="dx-bar-track">
-          <div class="dx-bar" style="width:46.0%;background:var(--dx-marker)"></div>
-          <span class="dx-bar-val">46,0&nbsp;%</span>
+          <div class="dx-bar" style="width:41.3%;background:var(--dx-marker)"></div>
+          <span class="dx-bar-val">41,3&nbsp;%</span>
         </div>
       </div>
       <div class="dx-bar-row">
         <div class="dx-bar-lab">chandra</div>
         <div class="dx-bar-track">
-          <div class="dx-bar" style="width:35.9%;background:var(--dx-chandra)"></div>
-          <span class="dx-bar-val">35,9&nbsp;%</span>
+          <div class="dx-bar" style="width:39.3%;background:var(--dx-chandra)"></div>
+          <span class="dx-bar-val">39,3&nbsp;%</span>
         </div>
       </div>
     </div>
   </div>
-  <figcaption class="dx-fig-note">Écart de 32 points pour marker, 36 pour chandra. La
+  <figcaption class="dx-fig-note">Écart de 21 points pour marker, 34 pour chandra. La
     hauteur d'en-tête discorde sur 46&nbsp;% des fichiers marker et 30&nbsp;% des
     fichiers chandra.</figcaption>
 </figure>
@@ -494,11 +619,12 @@ détectée (prédiction − annotation), pour marker.
 
 | Δligne optimal ↓ / écart d'en-tête → | −5 | −4 | −2 | −1 | 0 | +1 | +2 | +3 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| −5 | 1 | | | | | | | |
-| −2 | | | 1 | | 1 | | | |
+| −6 | | | | | 1 | | | |
+| −5 | 1 | 1 | | | | | | |
+| −2 | | | 1 | | | | | |
 | −1 | | | | **6** | | | | |
-| 0 | | 2 | 1 | 3 | **34** | 2 | | |
-| +1 | | | | | | **11** | 1 | |
+| 0 | | | 1 | 3 | **34** | 2 | | |
+| +1 | | 1 | | | | **11** | 1 | |
 | +2 | | | | | 1 | | 1 | |
 | +3 | | | | | | | | **1** |
 
@@ -512,59 +638,46 @@ optimal vaut +1 dans 11 cas sur 13.
 
 | Décalage optimal | marker | chandra |
 |---|---:|---:|
-| (0, 0) — aucun décalage | 40 | 51 |
-| (+1, 0) — une ligne | 12 | 7 |
+| (0, 0) — aucun décalage | 38 | 47 |
+| (+1, 0) — une ligne | 13 | 8 |
 | (−1, 0) — une ligne | 4 | 3 |
-| (±2, 0) | 4 | 4 |
-| Autre (dont Δcolonne ≠ 0) | 6 | 3 |
-| **Fichiers alignés à ≥ 90 % par un simple décalage** | **42 / 66** | **46 / 68** |
+| (±2, 0) | 2 | 4 |
+| Autre (dont Δcolonne ≠ 0) | 9 | 6 |
+| **Fichiers alignés à ≥ 90 % par un simple décalage** | **38 / 66** | **44 / 68** |
 
 :::
 
 ### Pourquoi les cellules glissent : les fusions
 
-Trois mécanismes distincts, sur trois chemins de code différents. Les confondre conduit
-à corriger au mauvais endroit.
+Une cellule fusionnée occupe plusieurs positions dans la grille. Chaque moteur la
+transmet — ou non — à sa façon, et c'est ce qui décide du sort de tout le tableau.
 
 ::: {.dx-scroll}
 
-| Mécanisme | Moteur | Où | Ampleur |
+| Situation | Moteur | Ce que la conversion en fait | Ampleur |
 |---|---|---|---|
-| `rowspan` ignoré par le parseur HTML | marker, opendataloader | `json_to_csv.py`, parseur — **corrigé** | 354 cellules, 37 documents sur 48 |
-| Lignes courtes complétées à droite | chandra | `json_to_csv.py:108`, `_normalize_chandra_table` | 13 des 21 fichiers discordants |
-| Lignes courtes complétées à droite à la lecture | marker | `evaluation_extraction.py:86`, `_load_csv` | 18 des 32 fichiers discordants |
-| Structure d'en-tête différente à la source | les deux | en amont, OCR/LLM | 22 des 53 fichiers discordants |
+| Fusion déclarée en `colspan` / `rowspan` | marker, opendataloader | développée en positions, valeur à l'origine seule | 219 et 354 cellules, 41 et 37 documents sur 48 |
+| Fusion non transmise, sous-ligne d'en-tête | chandra | replacée sous le libellé qu'elle détaille | 23 tableaux sur 88 |
+| Ligne courte sans fusion déclarée | marker | complétée à droite, faute d'indice | 18 tableaux sur 78 |
+| Structure d'en-tête différente à la source | les deux | rien — le décalage est en amont | 31 des 53 fichiers à en-tête discordant |
 
 :::
 
-#### Le `rowspan` ignoré — corrigé
+#### Les fusions déclarées, chez marker
 
-Le parseur HTML développait `colspan` mais ne lisait jamais `rowspan`. Chaque ligne
-suivant une cellule fusionnée verticalement perdait cette cellule, et tout ce qui la
-suivait glissait d'un cran à gauche.
+Le HTML de marker porte l'information : `colspan` sur 219 cellules dans 41 documents sur
+48, `rowspan` sur 354 cellules dans 37 documents. Les deux sont développés en positions de
+grille, la valeur n'étant écrite qu'à l'origine de la fusion — la convention des
+annotations de référence, où une fusion Excel n'écrit la valeur que dans sa première
+cellule. Répéter la valeur sur les lignes couvertes rendrait les lignes indiscernables à
+l'appariement des en-têtes et diviserait la récupération par près de deux.
 
-| Attribut de fusion | Documents marker concernés | Cellules |
-|---|---:|---:|
-| `colspan` > 1 | 41 / 48 (85 %) | 219 — développé |
-| `rowspan` > 1 | 37 / 48 (77 %) | 354 — **ignoré** |
+#### Les fusions non transmises, chez chandra
 
-Le correctif est appliqué et couvert par des tests. Mesuré en régénérant les grilles
-depuis les mêmes JSON, il porte la récupération numérique de **42,0 à 48,4 %** et la
-structure complète de 21 à 32 fichiers sur 69. Détails et convention retenue sur la page
-[Améliorations](ameliorations.qmd#correctif-appliqué-rowspan-dans-le-parseur-html).
+Le JSON de chandra ne porte aucune information de fusion : ses en-têtes à cellules
+fusionnées arrivent comme des lignes courtes.
 
-Les CSV ont été régénérés : les mesures marker de cette page sont données avant et après,
-la colonne « avant » étant calculée sur la sauvegarde
-`reprise/output_csv/marker_pre_rowspan/`.
-
-#### Le remplissage à droite
-
-`_normalize_chandra_table` (`json_to_csv.py:108`) complète les lignes courtes **par la
-droite**, et `_load_csv` (`evaluation_extraction.py:86`) fait de même à la lecture de
-tout CSV. Or les moteurs émettent les en-têtes à cellules fusionnées comme des lignes
-courtes.
-
-Sur le tableau `TAB-01_1`, l'annotation compte 12 colonnes ; la sous-ligne
+Sur le tableau `0497_423944677_TAB_1`, l'annotation compte 12 colonnes ; la sous-ligne
 d'en-tête `['Brute', 'Nette']` qualifie « Valeur d'inventaire des titres détenus »
 (colonnes 6 et 7) :
 
@@ -584,10 +697,14 @@ Trois effets en cascade :
 3. la ligne 0 ne portant que 11 libellés pour 12 colonnes de données, toute la partie
    droite du tableau glisse d'un cran.
 
-Contrairement à marker, le JSON de chandra ne porte **aucune** information de fusion —
-les lignes sont des tableaux plats — et le remplissage à droite est le seul recours. C'est
-cohérent avec les 21,2 % de cellules « colonne décalée » chez chandra contre 4,4 % chez
-marker : chez marker, l'information de fusion existait et il suffisait de la lire.
+La position perdue est cependant déductible : une sous-ligne de `k` cellules dont la ligne
+parente est courte de `k - 1` signale un libellé couvrant `k` colonnes. La conversion
+replace ces sous-lignes sous le libellé concerné — 23 tableaux sur 88 — selon la méthode
+décrite page [Du JSON au CSV](conversion.qmd#chandra-la-grille-est-déjà-là).
+
+Il reste 10,1 % de cellules « bonne ligne, colonne décalée » chez chandra contre 3,2 %
+chez marker : les fusions que la règle ne sait pas reconstituer, faute d'indice dans le
+format d'entrée.
 
 #### Ce qu'aucune correction de conversion ne rattrapera
 
@@ -617,11 +734,11 @@ ne l'a pas retenu.
 
 | Cause | marker, lignes | marker, colonnes | chandra, lignes | chandra, colonnes |
 |---|---:|---:|---:|---:|
-| Apparié | 72,8 % | 76,0 % | 80,3 % | 78,5 % |
-| Absent de la prédiction (similarité < 0,3) | 16,9 % | 17,3 % | 11,9 % | 13,0 % |
-| Libellé proche mais sous le seuil (0,3–0,5) | 4,7 % | 5,5 % | 3,5 % | 6,2 % |
-| Libellé vide dans l'annotation | 4,7 % | 0,2 % | 4,2 % | 2,1 % |
-| Candidat valide raté par l'appariement stable | 0,9 % | 1,0 % | 0,1 % | 0,2 % |
+| Apparié | 74,3 % | 81,1 % | 81,5 % | 83,2 % |
+| Absent de la prédiction (similarité < 0,3) | 17,0 % | 14,9 % | 11,9 % | 10,6 % |
+| Libellé proche mais sous le seuil (0,3–0,5) | 5,0 % | 3,1 % | 3,5 % | 3,8 % |
+| Libellé vide dans l'annotation | 2,8 % | 0,3 % | 3,1 % | 2,2 % |
+| Candidat valide raté par l'appariement stable | 0,9 % | 0,5 % | 0,1 % | 0,2 % |
 
 :::
 
@@ -659,24 +776,24 @@ porte sur des tableaux différents.
 
 | Fichier | Méthode | Lignes annotées | Lignes prédites | Valeurs attendues | Dans un autre CSV du SIREN |
 |---|---|---:|---:|---:|---:|
-| `TAB_552096281_1` | chandra | 15 | 6 | 77 | 100 % |
-| `432668432_1` | chandra | 45 | 1 | 238 | 99,6 % |
-| `TAB_392166781_atypique_1` | chandra | 17 | 2 | 46 | 97,8 % |
-| `TAB_392166781_atypique_1` | marker | 17 | 2 | 46 | 97,8 % |
-| `974_487772899_TAB_1` | chandra | 17 | 3 | 68 | 97,1 % |
-| `307299248_1` | chandra | 21 | 2 | 116 | 95,7 % |
-| `TAB_682024096_2` | marker | 17 | 3 | 92 | 95,7 % |
-| `TAB_300221017_1` | marker | 39 | 3 | 267 | 94,0 % |
-| `307299248_1` | marker | 21 | 2 | 116 | 89,7 % |
-| `TAB_552096281_1` | marker | 15 | 6 | 77 | 80,5 % |
-| `432668432_1` | marker | 45 | 2 | 238 | 75,6 % |
+| `TAB_392166781_atypique_1` | marker | 17 | 2 | 26 | 100 % |
+| `TAB_392166781_atypique_1` | chandra | 17 | 2 | 26 | 100 % |
+| `432668432_1` | chandra | 45 | 1 | 166 | 98,8 % |
+| `307299248_1` | chandra | 21 | 2 | 100 | 95,0 % |
+| `974_487772899_TAB_1` | chandra | 17 | 3 | 38 | 94,7 % |
+| `TAB_300221017_1` | marker | 39 | 3 | 125 | 92,0 % |
+| `307299248_1` | marker | 21 | 2 | 100 | 89,0 % |
+| `TAB_552096281_1` | marker | 15 | 6 | 58 | 87,9 % |
+| `TAB_552096281_1` | chandra | 15 | 6 | 58 | 87,9 % |
+| `TAB_682024096_2` | marker | 17 | 3 | 27 | 85,2 % |
+| `432668432_1` | marker | 45 | 2 | 166 | 75,3 % |
 
 :::
 
 Ces onze fichiers ne mesurent pas la qualité du moteur : ils mesurent un défaut
 d'appariement. Nombre de tableaux détectés différant de la référence : **14 SIREN sur
-48 pour marker** (9 sur-détections, 5 sous-détections), **13 sur 47 pour chandra**
-(10 sur-détections, 3 sous-détections).
+48 pour marker** (9 sur-détections, 5 sous-détections), **14 sur 48 pour chandra**
+(10 sur-détections, 4 sous-détections).
 
 ### Échecs structurels totaux
 
@@ -707,14 +824,14 @@ l'ensemble des CSV du SIREN.
 
 | Mesure | marker | chandra |
 |---|---:|---:|
-| Colonnes prédites = colonnes annotées | 49 / 69 | 54 / 70 |
-| Colonnes prédites > annotées | 11 | 7 |
+| Colonnes prédites = colonnes annotées | 50 / 69 | 54 / 70 |
+| Colonnes prédites > annotées | 10 | 7 |
 | Colonnes prédites < annotées | 9 | 9 |
-| Écart moyen de colonnes | −0,17 | −0,39 |
+| Écart moyen de colonnes | 0,00 | −0,39 |
 | Lignes prédites = lignes annotées | 28 / 69 | 38 / 70 |
 | Écart moyen de lignes | −1,52 | −1,06 |
 | Hauteur d'en-tête concordante | 37 / 69 | 49 / 70 |
-| Largeur d'en-tête de lignes concordante | 64 / 69 | 65 / 70 |
+| Largeur d'en-tête de lignes concordante | 66 / 69 | 68 / 70 |
 
 :::
 
@@ -752,11 +869,11 @@ est vide au même endroit.
 
 ::: {.dx-scroll}
 
-| | marker avant | marker après | chandra |
-|---|---:|---:|---:|
-| Cellules comptées dans `numeric_recovery` | 8 223 | 8 223 | 8 081 |
-| dont cellules vides de l'annotation | 2 828 (34,4 %) | 2 828 (34,4 %) | 2 667 (33,0 %) |
-| Cellules vides créditées comme récupérées | 1 453 (51,4 %) | 1 636 (57,9 %) | 1 296 (48,6 %) |
+| | marker | chandra |
+|---|---:|---:|
+| Cellules comptées dans `numeric_recovery` | 8 223 | 8 081 |
+| dont cellules vides de l'annotation | 2 828 (34,4 %) | 2 667 (33,0 %) |
+| Cellules vides créditées comme récupérées | 1 636 (57,9 %) | 1 587 (59,5 %) |
 
 :::
 
@@ -764,16 +881,16 @@ Trois lectures du même corpus, par ordre de sévérité croissante :
 
 ::: {.dx-scroll}
 
-| Définition de `numeric_recovery` | marker avant | marker après | chandra |
-|---|---:|---:|---:|
-| Moyenne par fichier, cellules vides incluses | 0,646 | 0,695 | 0,627 |
-| Hors cellules vides, pondérée par cellule | 0,420 | 0,484 | 0,390 |
+| Définition de `numeric_recovery` | marker | chandra |
+|---|---:|---:|
+| Moyenne par fichier, cellules vides incluses | 0,695 | 0,744 |
+| Hors cellules vides, pondérée par cellule | 0,497 | 0,572 |
 
 :::
 
 La métrique récompense donc en partie le fait de ne rien écrire, et la moyenne par
-fichier surpondère les petits tableaux. Le troisième chiffre est celui qui décrit le
-travail restant.
+fichier surpondère les petits tableaux. La seconde ligne est celle qui décrit le travail
+restant.
 
 ### `--cell-delta` ne fait pas ce qu'il annonce
 
@@ -786,7 +903,7 @@ l'implémentation l'est.
 ### `marker_last_work` : régression ou appariement cassé ?
 
 C'est la configuration la plus récente et la moins bonne sur toutes les métriques
-(`total_extraction` à 0,043 contre 0,261 pour marker). Deux différences la distinguent
+(`total_extraction` à 0,043 contre 0,362 pour marker). Deux différences la distinguent
 avant toute conclusion sur le moteur :
 
 - ses CSV vivent hors de `reprise/`, dans `LLM_eval/output_csv/marker_last_work/` ;
@@ -806,16 +923,21 @@ Trois limites bornent ce qu'on peut conclure de ces chiffres.
 
 **Test de présence.** « La valeur est présente ailleurs » se teste par égalité après
 normalisation. Sur des valeurs courtes, cela produit des coïncidences : les chiffres de
-l'entonnoir sont donc restreints aux valeurs d'au moins quatre chiffres. La
-décomposition en 5 395 cellules, elle, porte sur toutes les cellules non vides — elle
-peut donc légèrement surestimer la catégorie « présente ailleurs ».
+l'entonnoir sont donc restreints aux valeurs d'au moins quatre chiffres. La décomposition
+en catégories, elle, porte sur toutes les cellules non vides — elle peut donc légèrement
+surestimer la catégorie « présente ailleurs ».
+
+**Ordre de classement.** Une cellule relève de plusieurs catégories à la fois — non
+appariée *et* présente ailleurs, par exemple. Elle est comptée dans la première qui
+s'applique, de la structure vers la lecture : le total fait donc 100 % sans double
+comptage, mais les effectifs des catégories tardives sont minorés d'autant.
 
 **Décalage global.** Recherché par balayage exhaustif de Δligne ∈ [−6, +6] et
 Δcolonne ∈ [−4, +4], en maximisant le nombre de correspondances exactes.
 
-**Gains annoncés.** Chaque variante de correctif a été rejouée isolément sur le même
-corpus. Ils ne s'additionnent pas : les leviers 3 et 4 de la page
-[Améliorations](ameliorations.qmd) corrigent en partie les mêmes cellules.
+**Gains annoncés.** Chaque levier de la page [Améliorations](ameliorations.qmd) a été
+rejoué isolément sur le même corpus. Ils ne s'additionnent pas : les leviers 3 et 4
+corrigent en partie les mêmes cellules.
 
 ```{=html}
 <div id="dx-tip" class="dx-tip" role="status" aria-live="polite"></div>

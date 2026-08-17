@@ -4,32 +4,31 @@ subtitle: "Diagnostic de l'extraction des tableaux de comptes sociaux"
 toc: false
 ---
 
-Neuf valeurs sur dix sont bien lues par l'OCR. Une sur deux arrive dans la bonne cellule.
-L'écart n'est pas un problème de lecture mais d'alignement — et il vient de la façon dont
-les fusions de cellules sont converties, par trois mécanismes distincts dont le plus large
-est désormais corrigé.
+Neuf valeurs sur dix sont bien lues par l'OCR. Un peu plus d'une sur deux arrive dans la
+bonne cellule. L'écart n'est pas un problème de lecture mais d'alignement : il se joue
+dans la structure du tableau, pas dans les caractères.
 
 ```{=html}
 <div class="dx-tiles">
   <div class="dx-tile">
-    <span class="dx-tile-val" style="color:var(--dx-st-ok-ink)">90&nbsp;%</span>
+    <span class="dx-tile-val" style="color:var(--dx-st-ok-ink)">91&nbsp;%</span>
     <span class="dx-tile-lab">des valeurs attendues sont présentes quelque part dans
-      l'extraction (marker&nbsp;; 93&nbsp;% pour chandra)</span>
+      l'extraction (marker&nbsp;; 94&nbsp;% pour chandra)</span>
   </div>
   <div class="dx-tile">
-    <span class="dx-tile-val">51&nbsp;%</span>
-    <span class="dx-tile-lab">arrivent dans la bonne cellule après le correctif
-      <code>rowspan</code>, contre 43&nbsp;% avant</span>
+    <span class="dx-tile-val">52&nbsp;%</span>
+    <span class="dx-tile-lab">arrivent dans la bonne cellule (marker&nbsp;; 55&nbsp;%
+      pour chandra)</span>
   </div>
   <div class="dx-tile">
-    <span class="dx-tile-val" style="color:var(--dx-st-manquante-ink)">39&nbsp;pts</span>
-    <span class="dx-tile-lab">d'écart subsistant : de la donnée correctement lue, mais
-      toujours mal placée</span>
+    <span class="dx-tile-val" style="color:var(--dx-st-manquante-ink)">38&nbsp;pts</span>
+    <span class="dx-tile-lab">d'écart entre les deux : de la donnée correctement lue,
+      mais mal placée</span>
   </div>
   <div class="dx-tile">
-    <span class="dx-tile-val">2&nbsp;%</span>
+    <span class="dx-tile-val">1&nbsp;%</span>
     <span class="dx-tile-lab">des cellules portent une vraie erreur de lecture de
-      chiffres (106 sur 5&nbsp;395)</span>
+      chiffres (42 sur 5&nbsp;395 chez marker, 75 sur 5&nbsp;414 chez chandra)</span>
   </div>
 </div>
 ```
@@ -41,22 +40,21 @@ Le pipeline `PDF → JSON → CSV → métriques` a été mesuré sur les 74 tab
 savoir où elle finit. Trois conclusions.
 
 **Le goulot n'est pas la reconnaissance de caractères.** Les erreurs de lecture de
-chiffres représentent 2,0 % des cellules pour marker et 0,7 % pour chandra. En revanche,
-près de la moitié des cellules sont perdues parce que la ligne ou la colonne n'a pas pu
-être appariée à celle de l'annotation.
+chiffres représentent 0,8 % des cellules pour marker et 1,4 % pour chandra. En revanche,
+un tiers des cellules sont perdues parce que la ligne ou la colonne n'a pas pu être
+appariée à celle de l'annotation.
 
-**Le décalage vient de la façon dont les fusions de cellules sont converties.** Trois
-mécanismes distincts, sur trois chemins de code différents. Le premier est déjà corrigé :
-le parseur HTML développait `colspan` mais ignorait `rowspan`, alors que 77 % des
-documents marker en contiennent. Les CSV ont été régénérés : la récupération numérique
-passe de **42,0 à 48,4 %**, `total_extraction` de 0,261 à 0,362, et 21 fichiers gagnent
-2 points ou plus sans qu'aucun ne régresse.
+**La cause racine est la hauteur d'en-tête.** Un seul booléen — la hauteur détectée
+concorde-t-elle entre annotation et prédiction — sépare un bon fichier d'un mauvais : la
+récupération vaut **62,1 % quand elle concorde et 41,3 % sinon** chez marker, 73,0 %
+contre 39,3 % chez chandra. Elle discorde sur 32 fichiers marker sur 69 et 21 chandra
+sur 70.
 
-**Ce qui reste n'est pas là où on l'attend.** Pour 42 fichiers marker sur 66, un simple
-décalage global d'une ligne suffit à réaligner 90 % du tableau, et ce décalage correspond
-à une erreur de détection de la hauteur d'en-tête. Mais sur les 53 fichiers concernés, 22
-ont une source parfaitement régulière : là, le moteur a produit une autre structure
-d'en-tête, et aucune correction de la conversion n'y changera rien.
+**Ce qui reste n'est pas là où on l'attend.** Pour 38 fichiers marker sur 66 et 44 chandra
+sur 68, un simple décalage global suffit à réaligner 90 % du tableau, et ce décalage
+correspond terme à terme à l'erreur de détection de la hauteur d'en-tête. Mais une partie
+des fichiers concernés a une source parfaitement régulière : là, le moteur a produit une
+autre structure d'en-tête, et aucune correction de la conversion n'y changera rien.
 
 **Une partie de l'écart mesuré n'est pas imputable aux moteurs.** Un tiers des
 « cellules numériques » comptées dans `numeric_recovery` sont des cellules vides de
@@ -64,16 +62,19 @@ l'annotation, et l'appariement des tableaux par rang de fichier compare parfois 
 tableaux différents. Ces deux points se corrigent dans l'évaluation, pas dans le
 moteur.
 
-## Les trois pages
+## Les quatre pages
+
+[**Du JSON au CSV**](conversion.qmd) — l'étape de conversion qui fige la structure du
+tableau avant toute mesure : le format de sortie de chaque moteur, le chemin de code qui
+lui est propre, et les règles que les deux partagent.
 
 [**Chiffres et cas**](chiffres.qmd) — l'ensemble des mesures : entonnoir d'attrition,
-décomposition des 5 395 cellules attendues en douze catégories d'erreur avant et après
-correctif, effet de la taille du tableau, cas pathologiques fichier par fichier, et ce que
-les métriques publiées ne disent pas.
+décomposition des cellules attendues en douze catégories d'erreur, effet de la taille du
+tableau, cas pathologiques fichier par fichier, et ce que les métriques publiées ne disent
+pas.
 
-[**Améliorations**](ameliorations.qmd) — le correctif `rowspan` déjà appliqué et son
-effet mesuré, puis cinq leviers restants classés par nombre de cellules récupérables,
-chacun avec son gain mesuré et le code concerné.
+[**Améliorations**](ameliorations.qmd) — cinq leviers classés par nombre de cellules
+récupérables, chacun avec son gain mesuré et le code concerné.
 
 [**Comparaison des tableaux**](comparaison.qmd) — pour chacun des 72 tableaux, la
 grille annotée à la main face à la grille extraite par chaque moteur, cellule par
@@ -92,12 +93,11 @@ que le diagnostic décrive le pipeline en place et non une réimplémentation qu
 divergerait silencieusement.
 
 ::: {.callout-note appearance="simple"}
-## Pseudonymisation
+## Données affichées
 
-Les tableaux affichés sur ce site ont leurs raisons sociales, adresses et SIREN
-remplacés par des pseudonymes stables (« Entité 07 », « TAB-12 »). Les montants sont
-ceux réellement extraits, non modifiés : ce sont eux que le diagnostic doit montrer.
-Les variantes d'un même nom dues à l'OCR partagent le même numéro et se distinguent
-par un suffixe (`Entité 07` / `Entité 07·b`), de façon à ce qu'un écart de libellé
-reste visible.
+Les tableaux sont affichés tels quels — raisons sociales, SIREN et montants sont ceux
+réellement lus par le pipeline, sans transformation : c'est ce que le diagnostic doit
+montrer. Le corpus provient de comptes sociaux déposés, publiés en open data par
+l'INPI ; chaque tableau est désigné par son nom de fichier d'origine, qui porte le
+SIREN du déposant.
 :::

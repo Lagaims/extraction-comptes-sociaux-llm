@@ -17,6 +17,8 @@ website:
     left:
       - href: index.qmd
         text: Synthèse
+      - href: conversion.qmd
+        text: Du JSON au CSV
       - href: chiffres.qmd
         text: Chiffres et cas
       - href: ameliorations.qmd
@@ -30,7 +32,7 @@ website:
   page-footer:
     center: >
       Corpus `s3://projet-extraction-tableaux/reprise/` — 48 PDF, 74 tableaux annotés.
-      Raisons sociales et SIREN pseudonymisés.
+      Comptes sociaux déposés, publiés en open data par l'INPI.
   search: false
 
 format:

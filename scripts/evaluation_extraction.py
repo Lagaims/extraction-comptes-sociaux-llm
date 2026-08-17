@@ -77,6 +77,21 @@ def _load_correspondances(fs) -> dict[str, list[str]]:
 
 
 def _load_csv(fs, path: str) -> pd.DataFrame:
+    """Charge un CSV prédit en DataFrame de chaînes.
+
+    La complétion à droite n'est qu'un filet : depuis `_rectangularize`, les extracteurs
+    de `json_to_csv.py` rendent des grilles déjà rectangulaires. Elle ne sert plus que
+    pour les CSV produits avant ce correctif (`output_csv/marker_pre_rowspan/`). La
+    supprimer ne changerait d'ailleurs rien au comportement — `pd.DataFrame` complète
+    aussi les lignes courtes, et `fillna` remplace les manquants par des chaînes vides.
+
+    Args:
+        fs: système de fichiers S3.
+        path: chemin du CSV.
+
+    Returns:
+        DataFrame de chaînes, colonnes homogènes.
+    """
     import csv as _csv
 
     with fs.open(path, "r", encoding="utf-8-sig") as f:

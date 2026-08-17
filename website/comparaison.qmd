@@ -10,15 +10,12 @@ met en évidence la cellule appariée dans l'autre grille**, ce qui rend le déc
 directement lisible.
 
 ::: {.callout-note appearance="simple"}
-## Grilles postérieures au correctif `rowspan`
+## Origine des grilles
 
-Ces grilles reflètent les CSV régénérés après le
-[correctif `rowspan`](ameliorations.qmd#correctif-appliqué-rowspan-dans-le-parseur-html).
-Les CSV antérieurs restent disponibles sur S3 dans
-`reprise/output_csv/marker_pre_rowspan/` pour comparaison.
-
-Les décalages de colonnes qui subsistent chez marker relèvent des autres mécanismes —
-remplissage à droite à la lecture, et écart de structure d'en-tête en amont.
+Les grilles extraites sont les CSV de `reprise/output_csv/`, produits par
+[la conversion décrite ici](conversion.qmd). Les décalages de colonnes visibles relèvent
+soit des fusions que le format d'entrée ne transmet pas, soit d'un écart de structure
+d'en-tête présent dès la source.
 :::
 
 ::: {.dx-controls}
@@ -91,9 +88,10 @@ et restent neutres.
 bien dans le CSV, mais pas à la position appariée. C'est le cas le plus fréquent, et le
 plus révélateur : la lecture est bonne, le placement non.
 
-**Les libellés sont pseudonymisés.** Les variantes d'un même nom dues à l'OCR partagent
-le même numéro et se distinguent par un suffixe (`Entité 07` / `Entité 07·b`) : un écart
-de libellé entre annotation et prédiction reste donc visible.
+**Les libellés sont affichés tels quels** — raisons sociales comprises : un écart de
+libellé entre annotation et prédiction est lui-même un symptôme d'erreur de lecture, et
+doit rester visible. Le tableau est désigné par son nom de fichier d'origine
+(`{siren}_{rang}`).
 :::
 
 ```{=html}

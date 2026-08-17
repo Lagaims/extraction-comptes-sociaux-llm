@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Construit le jeu de données du site à partir de S3, en pseudonymisant les entités.
+"""Construit le jeu de données du site à partir de S3.
 
 Lit les annotations de référence et les CSV prédits, les convertit en grilles de
 cellules annotées (appariement ligne/colonne, statut de chaque cellule) puis écrit
 `data/comparaisons.json`, consommé par la page « Comparaison » du site.
 
-Aucune raison sociale, adresse ni SIREN réel ne sort de ce script : voir
-`Pseudonymizer`. Les montants sont conservés — ce sont eux que le site doit montrer.
+Les grilles sont publiées telles quelles — raisons sociales, SIREN, montants. Ces
+tableaux proviennent de comptes sociaux déposés et publiés en open data par l'INPI :
+le site montre donc exactement ce que le pipeline a lu, sans transformation.
 
 Usage :
     uv run --project website python website/build_data.py
@@ -21,8 +22,7 @@ import io
 import json
 import re
 import sys
-import unicodedata
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -43,389 +43,6 @@ METHODS: dict[str, str] = {
 OUT_PATH = Path(__file__).parent / "data" / "comparaisons.json"
 
 MATCH_THRESHOLD = 0.5
-
-
-# ── Pseudonymisation ──────────────────────────────────────────────────────────
-
-# Vocabulaire comptable des tableaux de filiales et participations, sous forme de
-# radicaux normalisés (sans accent, minuscule).
-#
-# Un libellé n'est conservé que si TOUS ses mots significatifs figurent ici. La règle
-# est volontairement stricte dans ce sens : « societes etrangeres » est un intertitre
-# et se conserve, « societe generale » est une entité et se pseudonymise. La règle
-# inverse — conserver dès qu'un mot est du vocabulaire — laisserait fuiter toute
-# raison sociale contenant « société », « capital » ou « participations ».
-_VOCAB = {
-    "societe",
-    "societes",
-    "filiale",
-    "filiales",
-    "participation",
-    "participations",
-    "sous",
-    "total",
-    "totaux",
-    "capital",
-    "capitaux",
-    "propre",
-    "propres",
-    "resultat",
-    "resultats",
-    "chiffre",
-    "chiffres",
-    "affaire",
-    "affaires",
-    "dividende",
-    "dividendes",
-    "pret",
-    "prets",
-    "avance",
-    "avances",
-    "consenti",
-    "consentis",
-    "caution",
-    "cautions",
-    "aval",
-    "avals",
-    "fourni",
-    "fournis",
-    "quote",
-    "quotepart",
-    "part",
-    "parts",
-    "titre",
-    "titres",
-    "valeur",
-    "valeurs",
-    "comptable",
-    "comptables",
-    "inventaire",
-    "inventaires",
-    "brut",
-    "brute",
-    "brutes",
-    "net",
-    "nette",
-    "nettes",
-    "devise",
-    "devises",
-    "exercice",
-    "exercices",
-    "etranger",
-    "etrangere",
-    "etrangeres",
-    "etrangers",
-    "francais",
-    "francaise",
-    "francaises",
-    "renseignement",
-    "renseignements",
-    "globaux",
-    "global",
-    "globale",
-    "detaille",
-    "detaillee",
-    "detailles",
-    "autre",
-    "autres",
-    "montant",
-    "montants",
-    "nombre",
-    "detenu",
-    "detenue",
-    "detenus",
-    "siege",
-    "social",
-    "sociale",
-    "sociaux",
-    "denomination",
-    "euro",
-    "euros",
-    "eur",
-    "millier",
-    "milliers",
-    "million",
-    "millions",
-    "neant",
-    "observation",
-    "observations",
-    "nature",
-    "rubrique",
-    "libelle",
-    "concernant",
-    "excede",
-    "reserve",
-    "reserves",
-    "report",
-    "nouveau",
-    "provision",
-    "provisions",
-    "amortissement",
-    "amortissements",
-    "depreciation",
-    "immobilisation",
-    "immobilisations",
-    "financiere",
-    "financieres",
-    "financier",
-    "creance",
-    "creances",
-    "dette",
-    "dettes",
-    "compte",
-    "comptes",
-    "courant",
-    "courants",
-    "groupe",
-    "liee",
-    "liees",
-    "lie",
-    "lies",
-    "controle",
-    "controlees",
-    "cout",
-    "acquisition",
-    "cloture",
-    "ouverture",
-    "variation",
-    "mouvement",
-    "mouvements",
-    "cede",
-    "cedes",
-    "acquis",
-    "donnee",
-    "donnees",
-    "disponible",
-    "disponibles",
-    "note",
-    "notes",
-    "dont",
-    "hors",
-    "taxe",
-    "taxes",
-    "encaisse",
-    "encaisses",
-    "perte",
-    "pertes",
-    "benefice",
-    "benefices",
-    "exceptionnel",
-    "courante",
-    "annexe",
-    "tableau",
-    "information",
-    "informations",
-    "pourcentage",
-    "identification",
-    "numero",
-    "forme",
-    "juridique",
-    "activite",
-    "secteur",
-    "pays",
-    "adresse",
-    "date",
-}
-# Mots de liaison et déterminants : ils ne portent aucune identité, on les ignore
-# avant d'appliquer la règle du « tous les mots dans le vocabulaire ».
-_STOPWORDS = {
-    "de",
-    "du",
-    "des",
-    "d",
-    "la",
-    "le",
-    "les",
-    "l",
-    "et",
-    "en",
-    "au",
-    "aux",
-    "a",
-    "par",
-    "pour",
-    "sur",
-    "dans",
-    "cours",
-    "dernier",
-    "derniere",
-    "ou",
-    "plus",
-    "moins",
-    "un",
-    "une",
-    "se",
-    "sa",
-    "son",
-    "ses",
-    "qui",
-    "que",
-    "avec",
-    "sans",
-    "y",
-    "compris",
-    "ci",
-    "dessus",
-    "dessous",
-    "n",
-    "no",
-    "s",
-    "the",
-    "of",
-    "and",
-}
-# Un libellé purement numérique, une devise ISO ou un symbole n'identifie personne.
-_NON_ENTITY_RE = re.compile(r"^[\W\d\s]*$|^[A-Z]{3}$")
-
-
-def _norm_label(value: str) -> str:
-    """Forme canonique d'un libellé, pour regrouper ses variantes d'OCR.
-
-    Args:
-        value: libellé brut issu de l'annotation ou de la prédiction.
-
-    Returns:
-        Chaîne sans accents, minuscule, ponctuation réduite à des espaces simples.
-    """
-    s = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
-
-
-class Pseudonymizer:
-    """Remplace les entités nommées par des pseudonymes stables sur tout le corpus.
-
-    Règle de décision, dans l'ordre :
-    1. libellé vide, purement numérique ou code devise ISO → conservé ;
-    2. libellé dont *tous* les mots significatifs sont du vocabulaire comptable
-       (`_VOCAB`) → conservé : c'est un en-tête ou un intertitre ;
-    3. sinon → pseudonymisé.
-
-    Le sens de la règle 2 est délibéré. Conserver un libellé dès qu'il *contient* un
-    mot de vocabulaire laisserait passer « Société Générale » ou « Orange Capital » ;
-    exiger que tous ses mots le soient ne conserve que les libellés structurels. Le
-    prix est une pseudonymisation parfois excessive d'intertitres inhabituels, ce qui
-    dégrade la lisibilité sans jamais exposer d'identité.
-
-    Les variantes proches d'un même nom (erreurs d'OCR) partagent le même numéro et se
-    distinguent par un suffixe : « Entité 07 » et « Entité 07·b ». Le lecteur voit
-    ainsi qu'il s'agit de la même entité *et* que les deux graphies diffèrent, ce qui
-    est précisément ce que la page de comparaison doit montrer.
-
-    L'appel est idempotent et mémoïsé : un même libellé reçoit toujours le même
-    pseudonyme, dans tous les tableaux et pour toutes les méthodes.
-    """
-
-    def __init__(self, similarity: float = 0.75) -> None:
-        self.similarity = similarity
-        self._groups: list[dict] = []  # {norm_ref, variants: {norm: suffix}}
-        self._cache: dict[str, str] = {}
-        # Les groupes sont indexés par longueur du libellé de référence. Une similarité
-        # de Levenshtein >= s impose min_len/max_len >= s : seules quelques classes de
-        # longueur peuvent donc contenir un groupe candidat. Sans cet index, le corpus
-        # (plusieurs milliers de libellés distincts) impose un balayage quadratique.
-        self._by_len: dict[int, list[dict]] = defaultdict(list)
-
-    @staticmethod
-    def _is_entity(label: str) -> bool:
-        """Détermine si un libellé désigne une entité à masquer.
-
-        Args:
-            label: libellé brut.
-
-        Returns:
-            True si le libellé doit être pseudonymisé.
-        """
-        stripped = label.strip()
-        if not stripped or _NON_ENTITY_RE.match(stripped):
-            return False
-        words = [w for w in _norm_label(label).split() if w and not w.isdigit()]
-        significant = [w for w in words if w not in _STOPWORDS]
-        if not significant:
-            return False
-        return not all(w in _VOCAB for w in significant)
-
-    def _group_for(self, norm: str) -> dict:
-        """Retourne le groupe de variantes de `norm`, en le créant au besoin.
-
-        Args:
-            norm: forme canonique du libellé.
-
-        Returns:
-            Le groupe de variantes auquel `norm` appartient.
-        """
-        n = len(norm)
-        lo = max(1, int(n * self.similarity))
-        hi = int(n / self.similarity) + 1
-        for length in range(lo, hi + 1):
-            for group in self._by_len.get(length, ()):
-                if E._lev_similarity(norm, group["norm_ref"]) >= self.similarity:
-                    return group
-        group = {"norm_ref": norm, "index": len(self._groups) + 1, "variants": {}}
-        self._groups.append(group)
-        self._by_len[n].append(group)
-        return group
-
-    def __call__(self, label: str) -> str:
-        """Pseudonymise un libellé si c'est une entité, sinon le retourne inchangé.
-
-        Args:
-            label: libellé brut.
-
-        Returns:
-            Le libellé d'origine, ou un pseudonyme stable de la forme « Entité 07 ».
-        """
-        if label in self._cache:
-            return self._cache[label]
-        if not self._is_entity(label):
-            self._cache[label] = label
-            return label
-        norm = _norm_label(label)
-        group = self._group_for(norm)
-        if norm not in group["variants"]:
-            # Le premier vu porte le nom nu ; les variantes d'OCR sont suffixées ·b, ·c…
-            suffix = "" if not group["variants"] else f"·{chr(ord('a') + len(group['variants']))}"
-            group["variants"][norm] = suffix
-        out = f"Entité {group['index']:02d}{group['variants'][norm]}"
-        self._cache[label] = out
-        return out
-
-    @property
-    def n_entities(self) -> int:
-        return len(self._groups)
-
-    def kept_labels(self) -> list[str]:
-        """Libellés conservés en clair — à inspecter pour vérifier l'absence de fuite."""
-        return sorted({k for k, v in self._cache.items() if k == v and k.strip()})
-
-
-class FileAliaser:
-    """Attribue un identifiant neutre et stable à chaque tableau (`TAB-01_1`)."""
-
-    def __init__(self) -> None:
-        self._map: dict[str, str] = {}
-
-    def __call__(self, stem: str) -> str:
-        """Traduit un nom de fichier contenant un SIREN en identifiant neutre.
-
-        Args:
-            stem: nom de fichier sans extension, p. ex. `974_487772899_TAB_2`.
-
-        Returns:
-            Identifiant de la forme `TAB-05_2` (rang du tableau conservé).
-        """
-        base, rank = _split_rank(stem)
-        if base not in self._map:
-            self._map[base] = f"TAB-{len(self._map) + 1:02d}"
-        return f"{self._map[base]}_{rank}" if rank else self._map[base]
-
-
-_RANK_RE = re.compile(r"^(.*?)_(\d+)$")
-
-
-def _split_rank(stem: str) -> tuple[str, str]:
-    """Sépare le nom de base et le rang du tableau (`x_2` → `('x', '2')`)."""
-    m = _RANK_RE.match(stem)
-    return (m.group(1), m.group(2)) if m else (stem, "")
 
 
 # ── Chargement ────────────────────────────────────────────────────────────────
@@ -468,6 +85,15 @@ def load_xlsx(fs, path: str) -> pd.DataFrame:
 # ── Statut des cellules ───────────────────────────────────────────────────────
 
 
+# Mêmes unités que `E._UNIT_SUFFIX_RE`, **sans** le `%` : celui-ci porte une information
+# d'échelle (facteur 100) et doit être converti, pas supprimé. Le retirer avant la
+# conversion faisait comparer `70%` à `0,7` comme deux valeurs distinctes, et classait la
+# cellule en erreur de lecture (64 cellules à tort chez marker, 69 chez chandra).
+_UNIT_SUFFIX_NO_PCT_RE = re.compile(
+    r"(?i)\s*(€|eur|euros?|usd|\$|gbp|£|nok|sek|chf|jpy|¥|kr|pp|bps?)\s*$"
+)
+
+
 def _norm_num(value: str) -> str:
     """Normalise un nombre pour la comparaison (espaces, %, signe, parenthèses).
 
@@ -481,7 +107,7 @@ def _norm_num(value: str) -> str:
     neg = False
     if s.startswith("(") and s.endswith(")"):
         neg, s = True, s[1:-1].strip()
-    s = E._UNIT_SUFFIX_RE.sub("", s).strip()
+    s = _UNIT_SUFFIX_NO_PCT_RE.sub("", s).strip()
     if re.match(r"^[-−]\s*", s):
         neg, s = True, re.sub(r"^[-−]\s*", "", s)
     for _ in range(3):
@@ -528,31 +154,24 @@ def cell_status(expected: str, got: str | None, elsewhere: bool) -> str:
     return "differente"
 
 
-def build_grid(df: pd.DataFrame, pseudo: Pseudonymizer) -> list[list[str]]:
-    """Convertit une grille en listes de chaînes, entités pseudonymisées.
-
-    La pseudonymisation s'applique à *toutes* les cellules, pas seulement aux colonnes
-    d'en-tête de lignes : une erreur d'alignement — le sujet même de ce site — déplace
-    régulièrement une raison sociale dans une colonne de montants. Les montants ne sont
-    pas affectés, `_is_entity` écartant les valeurs numériques.
+def build_grid(df: pd.DataFrame) -> list[list[str]]:
+    """Convertit une grille en listes de chaînes, cellule par cellule.
 
     Args:
         df: grille brute.
-        pseudo: pseudonymiseur.
 
     Returns:
-        Grille de chaînes, entités remplacées.
+        Grille de chaînes, contenu inchangé.
     """
-    return [[pseudo(str(df.iloc[r, c])) for c in range(len(df.columns))] for r in range(len(df))]
+    return [[str(df.iloc[r, c]) for c in range(len(df.columns))] for r in range(len(df))]
 
 
-def compare_pair(ann: pd.DataFrame, pred: pd.DataFrame, pseudo: Pseudonymizer) -> dict | None:
+def compare_pair(ann: pd.DataFrame, pred: pd.DataFrame) -> dict | None:
     """Compare une annotation et une prédiction, cellule par cellule.
 
     Args:
         ann: grille annotée de référence.
         pred: grille prédite.
-        pseudo: pseudonymiseur figé.
 
     Returns:
         Dict décrivant les deux grilles, l'appariement et le statut de chaque
@@ -597,8 +216,8 @@ def compare_pair(ann: pd.DataFrame, pred: pd.DataFrame, pseudo: Pseudonymizer) -
 
     expected = sum(counts.values())
     return {
-        "ann": build_grid(ann, pseudo),
-        "pred": build_grid(pred, pseudo),
+        "ann": build_grid(ann),
+        "pred": build_grid(pred),
         "annHeaderRows": ann_hrows,
         "annHeaderCols": ann_hcols,
         "predHeaderRows": pred_hrows,
@@ -644,21 +263,18 @@ def build(limit: int | None = None) -> dict:
     if limit:
         names = names[:limit]
 
-    # L'itération suit l'ordre alphabétique des noms de fichiers : la numérotation des
-    # pseudonymes est donc reproductible d'un build à l'autre, à corpus constant.
-    pseudo = Pseudonymizer()
-    aliaser = FileAliaser()
     print("Comparaison…", flush=True)
     tables = []
     for name in names:
-        alias = aliaser(name)
+        # Le nom de fichier — `{siren}_{rang}` — sert d'identifiant : il permet de
+        # retrouver le PDF d'origine à partir d'un tableau affiché sur le site.
         ann = load_xlsx(fs, ann_paths[name])
-        entry = {"id": alias, "methods": {}}
+        entry = {"id": name, "methods": {}}
         for method in METHODS:
             path = pred_paths[method].get(name)
             if path is None:
                 continue
-            result = compare_pair(ann, load_csv(fs, path), pseudo)
+            result = compare_pair(ann, load_csv(fs, path))
             if result is not None:
                 entry["methods"][method] = result
         if entry["methods"]:
@@ -674,7 +290,7 @@ def build(limit: int | None = None) -> dict:
             entry["annCols"] = len(entry["ann"][0]) if entry["ann"] else 0
             tables.append(entry)
         print(
-            f"  {alias:<12} "
+            f"  {name:<20} "
             + " ".join(
                 f"{m}={r['recoveryRate']:.0%}" if r.get("recoveryRate") is not None else f"{m}=n/a"
                 for m, r in entry["methods"].items()
@@ -687,11 +303,11 @@ def build(limit: int | None = None) -> dict:
             "source": f"s3://{BUCKET}/reprise/",
             "methods": list(METHODS),
             "nTables": len(tables),
-            "nEntities": pseudo.n_entities,
             "matchThreshold": MATCH_THRESHOLD,
             "note": (
-                "Raisons sociales, adresses et SIREN remplacés par des pseudonymes "
-                "stables. Les montants sont ceux extraits, non modifiés."
+                "Grilles publiées telles quelles : raisons sociales, SIREN et montants "
+                "sont ceux extraits, non modifiés. Source : comptes sociaux déposés, "
+                "publiés en open data par l'INPI."
             ),
         },
         "tables": tables,
@@ -711,10 +327,7 @@ def main() -> None:
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
     )
     size_kb = args.out.stat().st_size / 1024
-    print(
-        f"\n{args.out} — {payload['meta']['nTables']} tableaux, "
-        f"{payload['meta']['nEntities']} entités pseudonymisées, {size_kb:.0f} Ko"
-    )
+    print(f"\n{args.out} — {payload['meta']['nTables']} tableaux, {size_kb:.0f} Ko")
 
 
 if __name__ == "__main__":

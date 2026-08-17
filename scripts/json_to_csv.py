@@ -21,6 +21,8 @@ import argparse
 import csv
 import io
 import json
+import re
+import unicodedata
 from abc import ABC, abstractmethod
 from html.parser import HTMLParser
 from pathlib import Path
@@ -55,6 +57,156 @@ SOURCES: dict[str, dict] = {
 }
 
 Table = list[list[str]]
+
+
+# Une cellule « numérique » commence par un chiffre ou un signe et ne contient que des
+# chiffres, séparateurs et symboles de montant. Les libellés d'en-tête qui portent un
+# appel de note (« Capital (3) ») ou une date (« 31-déc-21 ») en relèvent aussi, d'où la
+# règle « au moins deux » pour qualifier une ligne de données.
+_NUMERIC_CELL_RE = re.compile(r"^[(\-−+]?\d[\d\s  .,%()€$/–—-]*$")
+
+# Dans le tableau réglementaire des filiales et participations, le seul en-tête à
+# sous-colonnes est le bloc « valeurs comptables » / « valeur d'inventaire » des titres
+# détenus, scindé en « Brute » / « Nette ». C'est lui que détaille une sous-ligne
+# d'en-tête, et c'est sa cellule de continuation que les moteurs omettent.
+_GROUP_HEADER_RE = re.compile(r"valeur|inventaire")
+
+
+def _norm(value: str) -> str:
+    """Minuscule sans accents, pour reconnaître un libellé quelle que soit sa graphie."""
+    stripped = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
+    return stripped.lower()
+
+
+def _is_numeric_cell(value: str) -> bool:
+    return bool(_NUMERIC_CELL_RE.match(value.strip()))
+
+
+def _label_index(row: list[str]) -> int | None:
+    """Position de l'unique cellule non vide d'une ligne, ou None s'il y en a 0 ou ≥2."""
+    filled = [i for i, c in enumerate(row) if c.strip()]
+    return filled[0] if len(filled) == 1 else None
+
+
+def _first_data_row(table: Table) -> int:
+    """Rang de la première ligne de données, c'est-à-dire d'au moins deux nombres.
+
+    Args:
+        table: grille brute.
+
+    Returns:
+        L'indice de la première ligne de données, ou `len(table)` s'il n'y en a aucune.
+    """
+    for i, row in enumerate(table):
+        if sum(1 for c in row if _is_numeric_cell(c)) >= 2:
+            return i
+    return len(table)
+
+
+def _canonical_width(table: Table) -> int:
+    """Largeur du tableau, mesurée sur les seules lignes porteuses de plusieurs cellules.
+
+    Une ligne-label — un intertitre de section, seule cellule non vide de sa ligne — ne
+    doit pas fixer la largeur : certains moteurs la placent en fin de ligne, ce qui
+    ajouterait autant de colonnes fantômes à tout le tableau.
+
+    Args:
+        table: grille brute.
+
+    Returns:
+        La largeur retenue, ou 0 pour une grille vide.
+    """
+    body = [row for row in table if _label_index(row) is None and row]
+    return max((len(r) for r in body), default=max((len(r) for r in table), default=0))
+
+
+def _align_header_subrows(table: Table, width: int) -> Table:
+    """Replace une sous-ligne d'en-tête sous le libellé qu'elle détaille.
+
+    Une sous-ligne de `k` cellules dont la ligne parente est courte d'exactement `k - 1`
+    signale un libellé couvrant `k` colonnes dont les cellules de continuation n'ont pas
+    été émises. Complétée à droite, elle atterrit en colonnes 0..k-1 — donc sous les
+    mauvais en-têtes, ce qui fausse l'appariement de toutes les colonnes du tableau.
+
+    Le libellé couvrant est identifié par `_GROUP_HEADER_RE`, et seulement s'il est
+    **unique** dans la ligne parente : à défaut le repli à droite s'applique, faute de
+    savoir laquelle des positions candidates est la bonne.
+
+    Args:
+        table: grille brute.
+        width: largeur canonique.
+
+    Returns:
+        La grille, sous-lignes d'en-tête repositionnées.
+    """
+    rows = [list(r) for r in table]
+    for i in range(1, _first_data_row(rows)):
+        row = rows[i]
+        k = len(row)
+        if not (2 <= k < width) or any(_is_numeric_cell(c) for c in row):
+            continue
+        parent = rows[i - 1]
+        if len(parent) != width - (k - 1):
+            continue
+        matches = [j for j, c in enumerate(parent) if _GROUP_HEADER_RE.search(_norm(c))]
+        if len(matches) != 1:
+            continue
+        j = matches[0]
+        rows[i - 1] = parent[: j + 1] + [""] * (k - 1) + parent[j + 1 :]
+        rows[i] = [""] * j + row + [""] * (width - j - k)
+    return rows
+
+
+def _normalize_grid(table: Table) -> Table:
+    """Met une grille extraite en forme rectangulaire, colonnes alignées.
+
+    Trois règles, dans l'ordre : largeur mesurée hors lignes-labels, sous-lignes
+    d'en-tête replacées sous le libellé qu'elles détaillent, lignes-labels ramenées en
+    première colonne. Ce qui reste court est complété à droite, faute de mieux.
+
+    Args:
+        table: grille brute issue d'un extracteur.
+
+    Returns:
+        Grille rectangulaire.
+    """
+    if not table:
+        return table
+    width = _canonical_width(table)
+    rows = _align_header_subrows(table, width)
+
+    normalized: Table = []
+    for row in rows:
+        label = _label_index(row)
+        # Un intertitre occupe la ligne entière : sa colonne d'origine ne porte aucune
+        # information, et la conserver au-delà de la largeur du tableau ajouterait des
+        # colonnes vides à toutes les autres lignes.
+        if label is not None and len(row) > width:
+            normalized.append([row[label]] + [""] * (width - 1))
+        else:
+            normalized.append(row)
+    return _rectangularize(normalized)
+
+
+def _rectangularize(table: Table) -> Table:
+    """Complète les lignes courtes pour que toutes aient la largeur de la plus longue.
+
+    Chaque extracteur rend une grille rectangulaire : c'est ici, et seulement ici, que
+    l'on sait d'où viennent les cellules manquantes. `_load_csv` côté évaluation ne voit
+    qu'un CSV et ne peut que compléter à droite — laisser la grille irrégulière revient
+    donc à lui déléguer une décision de structure qu'il n'a pas les moyens de prendre.
+
+    Args:
+        table: grille éventuellement irrégulière.
+
+    Returns:
+        La même grille, toutes lignes portées à la largeur maximale par des cellules
+        vides à droite. Une grille déjà rectangulaire est retournée inchangée.
+    """
+    if not table:
+        return table
+    width = max(len(row) for row in table)
+    return [row + [""] * (width - len(row)) for row in table]
 
 
 # ── Extracteurs ───────────────────────────────────────────────────────────────
@@ -95,18 +247,23 @@ class MarkerTableExtractor(TableExtractor):
 
 
 def _normalize_chandra_table(table: Table) -> Table | None:
-    """
-    Nettoie un tableau Chandra :
-    - Détermine la largeur canonique sur les lignes avec ≥2 cellules non-vides.
-    - Complète toutes les lignes (y compris les lignes-labels à 1 cellule) jusqu'à
-      cette largeur, afin de conserver les en-têtes de section dans le CSV.
-    Retourne None si le tableau ne contient aucune ligne de données (≥2 cellules).
+    """Écarte un tableau Chandra sans données, met les autres en forme.
+
+    La mise en forme est celle de `_normalize_grid`, commune à tous les moteurs. Seul le
+    rejet est propre à chandra : ses pages produisent des blocs qui ne sont pas des
+    tableaux, et un bloc dont aucune ligne ne porte deux cellules n'en est pas un.
+
+    Args:
+        table: tableau brut d'une page chandra.
+
+    Returns:
+        La grille rectangulaire, ou None si le tableau ne contient aucune ligne de
+        données (≥ 2 cellules non vides).
     """
     data_rows = [row for row in table if sum(1 for c in row if c.strip()) > 1]
     if not data_rows:
         return None
-    max_cols = max(len(r) for r in data_rows)
-    return [r + [""] * (max_cols - len(r)) for r in table]
+    return _normalize_grid(table)
 
 
 class ChandraTableExtractor(TableExtractor):
@@ -148,7 +305,11 @@ class OpenDataLoaderTableExtractor(TableExtractor):
 
 
 class _TableHTMLParser(HTMLParser):
-    """Convertit un tableau HTML en matrice rectangulaire, fusions comprises.
+    """Convertit un tableau HTML en matrice de chaînes, fusions comprises.
+
+    Les fusions étant traitées ligne par ligne, une ligne dont le HTML compte moins de
+    cellules que les autres ressort plus courte : c'est `_parse_html_tables` qui achève
+    la grille en la passant par `_rectangularize`.
 
     `colspan` est développé en cellules vides à droite ; `rowspan` est reporté sur les
     lignes suivantes via `_carried`. Sans ce report, chaque ligne suivant une cellule
@@ -269,9 +430,17 @@ class _TableHTMLParser(HTMLParser):
 
 
 def _parse_html_tables(html: str) -> list[Table]:
+    """Parse un fragment HTML et retourne ses tableaux, chacun rectangulaire.
+
+    Args:
+        html: fragment HTML pouvant contenir plusieurs `<table>`.
+
+    Returns:
+        Une grille de chaînes par `<table>` rencontrée.
+    """
     parser = _TableHTMLParser()
     parser.feed(html)
-    return parser.tables
+    return [_normalize_grid(table) for table in parser.tables]
 
 
 # ── Sérialisation ─────────────────────────────────────────────────────────────
