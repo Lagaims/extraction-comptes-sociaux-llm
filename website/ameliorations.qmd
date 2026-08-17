@@ -55,7 +55,12 @@ CSV du même SIREN.
 Deux chantiers distincts, à ne pas confondre :
 
 - **côté pipeline**, la détection de frontière de tableau — un tableau à cheval sur deux
-  pages est coupé, et deux tableaux voisins sont parfois fusionnés ;
+  pages est coupé, et deux tableaux voisins sont parfois fusionnés. Le premier des deux cas
+  est désormais traité à la conversion : un bloc de début de page qui n'a pas d'en-tête, ou
+  qui répète celui du bloc précédent, est recollé à lui
+  ([règle](conversion.qmd#ce-que-les-deux-chemins-partagent)). Le second — deux tableaux
+  fusionnés en un — reste ouvert, et le corpus n'a pas été reconverti depuis, donc le gain
+  n'est pas encore mesuré ;
 - **côté évaluation**, l'appariement, qui devrait se faire par similarité de contenu
   (chevauchement des libellés de lignes, par exemple) plutôt que par rang. Sinon le score
   mesure la chance d'un alignement d'index.
@@ -207,6 +212,8 @@ passe par `_list_pairs_from_correspondances` et ses noms de fichiers sont des SI
    de suivi.
 
 Le levier 02, volet pipeline — la détection de frontière de tableau — est le plus lourd et
-n'a pas été chiffré ici : il demande de reprendre la segmentation en amont de la
-conversion. Il devient prioritaire une fois les cinq premières étapes faites, si les 14
-SIREN à comptage divergent subsistent.
+n'a pas été chiffré ici. Son cas le plus fréquent, le tableau coupé par un saut de page, est
+traité à la conversion depuis la rédaction de cette page ; ce qui reste — deux tableaux
+voisins fusionnés en un — demande de reprendre la segmentation en amont. Ce reste devient
+prioritaire une fois les cinq premières étapes faites, si des SIREN à comptage divergent
+subsistent après reconversion du corpus.

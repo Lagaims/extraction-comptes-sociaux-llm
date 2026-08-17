@@ -23,6 +23,16 @@ loin, dans `evaluation_extraction.py`, au moment de comparer.
 Conséquence pratique : une valeur mal placée à cette étape ne peut plus être rattrapée
 en aval, tandis qu'une valeur mal formatée, elle, le sera.
 
+::: {.callout-note appearance="simple"}
+## Comptages et recollage des sauts de page
+
+Les nombres de tableaux cités sur cette page — 78 CSV marker, 88 chandra — ont été
+mesurés avant l'ajout du recollage des tableaux coupés par un saut de page, décrit plus
+bas. La conversion en produit donc désormais moins ; le corpus n'a pas été reconverti
+depuis, et les chiffres publiés ici comme sur les autres pages décrivent l'état
+antérieur.
+:::
+
 ::: {.dx-scroll}
 
 | | marker | chandra |
@@ -32,6 +42,7 @@ en aval, tandis qu'une valeur mal formatée, elle, le sera.
 | Contenu d'un tableau | HTML `<table>` | matrice de chaînes déjà découpée |
 | Information de fusion | `colspan`, `rowspan` | **aucune** |
 | Travail de la conversion | analyser le HTML, développer les fusions | replacer les sous-lignes d'en-tête |
+| Travail commun aux deux | recoller les tableaux coupés par un saut de page, rectangulariser | idem |
 | Tableaux produits (48 PDF) | 78 | 88 |
 
 :::
@@ -65,12 +76,13 @@ fragment `html` et ses `children` :
 blocs `TableGroup`.
 
 Retenir les deux types pourrait produire des doublons — un `TableGroup` contient ses
-`Table`. Ce n'est pas le cas ici : le `html` d'un `TableGroup` ne contient que des
-pointeurs `<content-ref>`, jamais de balise `<table>`. Le repli qui enveloppe un
-fragment sans `<table>` dans une ligne artificielle ne produit alors aucune cellule, donc
-aucun tableau. Sur le corpus, **aucun des 18 `TableGroup` ne porte de `<table>`** : la
-collecte est de fait sans doublon, mais elle le doit au format de sortie de marker, pas à
-une garantie du code.
+`Table`. Sur le corpus, le cas ne se présente pas : le `html` d'un `TableGroup` ne
+contient que des pointeurs `<content-ref>`, jamais de balise `<table>`, et **aucun des 18
+`TableGroup` ne porte de `<table>`**. Mais rien dans le format ne le garantit, aussi la
+collecte le garantit-elle elle-même : **un `TableGroup` dont la descendance porte des
+blocs `Table` est écarté au profit de ceux-ci**, et n'est retenu que s'il est seul à
+porter le HTML du tableau. La déduplication ne dépend donc plus de la forme de la sortie
+du moteur.
 
 Quatre blocs `Table` ne produisent rien non plus : leur `html` vaut `<p></p>`. Le compte
 final tombe juste — 78 tableaux, 78 CSV sur S3.
@@ -96,8 +108,10 @@ Les fusions étant traitées ligne par ligne, une ligne dont le HTML compte moin
 cellules que les autres ressort plus courte — c'est le cas de 18 des 78 tableaux marker.
 `_normalize_grid` achève la grille avant l'écriture du CSV : c'est la mise en forme
 commune aux deux moteurs, décrite plus bas. Marker déclarant ses fusions en `colspan`,
-ses lignes d'en-tête sont déjà à la bonne largeur ; sur ce chemin, seule la règle des
-lignes-labels joue, sur 3 tableaux.
+ses lignes d'en-tête sont déjà à la bonne largeur ; sur ce chemin, la règle des
+lignes-labels était la seule à jouer, sur 3 tableaux. Le recollage des sauts de page et le
+placement d'une sous-ligne dans le trou laissé par des cellules de continuation, tous deux
+ajoutés depuis cette mesure, peuvent désormais s'y appliquer aussi.
 
 ## chandra — la grille est déjà là
 
@@ -118,8 +132,10 @@ groupées par page.
 ```
 
 `ChandraTableExtractor` parcourt les pages dans l'ordre et concatène leurs tableaux. Sur
-le corpus, 42 fichiers tiennent en une page, 5 en deux pages, 1 en trois — un tableau
-coupé par un saut de page ressort donc en deux tableaux distincts, donc en deux CSV.
+le corpus, 42 fichiers tiennent en une page, 5 en deux pages, 1 en trois. Un tableau coupé
+par un saut de page arrive donc en deux blocs : ils sont recollés quand la coupure est
+reconnaissable, selon la règle [décrite plus bas](#ce-que-les-deux-chemins-partagent),
+commune aux deux moteurs.
 
 Le point structurant est ce que le format **ne contient pas** : aucune information de
 fusion. Là où marker dit `rowspan="2"`, chandra livre des lignes plates. L'information
@@ -147,19 +163,34 @@ L'information perdue est pourtant déductible : quand une sous-ligne compte `k` 
 que sa ligne parente est courte d'exactement `k - 1`, c'est qu'un libellé parent couvre `k`
 colonnes sans que ses cellules de continuation aient été émises.
 
-Reste à savoir lequel. Dans le tableau réglementaire des filiales et participations, le
-seul en-tête à sous-colonnes est le bloc « valeurs comptables » / « valeur d'inventaire »
-des titres détenus : le libellé couvrant est donc identifié sur ce vocabulaire, et
-**seulement s'il est unique** dans la ligne parente — sinon la règle 3 s'applique, faute de
-pouvoir trancher. La règle joue sur **23 des 88 tableaux chandra**.
+Reste à savoir lequel. Deux signaux sont interrogés, le vocabulaire d'abord :
+
+- **le vocabulaire du tableau réglementaire** — le seul en-tête à sous-colonnes y est le
+  bloc « valeurs comptables » / « valeur d'inventaire » des titres détenus. Un libellé
+  parent qui en relève, et **seulement s'il est unique** dans sa ligne, est le libellé
+  couvrant. C'est ce signal qui joue sur **23 des 88 tableaux chandra** ;
+- **l'unicité du candidat**, à défaut. Si la ligne parente n'offre qu'un seul libellé
+  susceptible de couvrir des sous-colonnes — non vide, non numérique, hors première
+  colonne — il n'y a rien à trancher, et aucun vocabulaire n'est nécessaire. La première
+  colonne est exclue : elle porte les raisons sociales, jamais un en-tête à sous-colonnes.
+
+Si aucun des deux ne tranche, la règle 3 reprend la main.
+
+Une seconde configuration produit la même sous-ligne mal placée, et se traite sans
+interpréter aucun libellé : quand la ligne parente est **déjà à la largeur du tableau** et
+porte exactement `k - 1` cellules vides à la suite d'un libellé, ce trou désigne le libellé
+couvrant. C'est le cas du moteur qui a bien émis les cellules de continuation mais livre
+quand même la sous-ligne à plat. Là encore, deux trous candidats font renoncer.
 
 ::: {.callout-note appearance="simple"}
 ## Portée de la règle 2
 
-Elle s'appuie sur le vocabulaire d'un tableau réglementaire précis. Sur un corpus d'une
-autre nature, elle ne se déclencherait pas et la complétion à droite reprendrait la main.
-La solution de fond est en amont, dans le format de sortie de l'API chandra, qui devrait
-transmettre ses fusions comme marker le fait en `colspan`.
+Le trou de continuation et l'unicité du candidat ne supposent aucun vocabulaire et valent
+donc sur un corpus d'une autre nature ; le vocabulaire réglementaire, lui, ne se
+déclencherait pas ailleurs. Quand aucun signal ne tranche, la complétion à droite reprend
+la main : mieux vaut le comportement connu qu'un placement arbitraire. La solution de fond
+reste en amont, dans le format de sortie de
+l'API chandra, qui devrait transmettre ses fusions comme marker le fait en `colspan`.
 :::
 
 ## Ce que les deux chemins partagent
@@ -171,7 +202,31 @@ les mêmes propriétés.
 produit `{stem}_1.csv`, `{stem}_2.csv`, … Le rang est le seul lien avec l'annotation :
 l'évaluation apparie `{stem}_1.xlsx` à `{stem}_1.csv`. Dès que le moteur découpe un
 tableau en deux, ou en fusionne deux, tout le reste du fichier est comparé de travers.
-Le corpus le montre : 74 annotations face à 78 CSV marker et 88 CSV chandra.
+Avant recollage, le corpus le montrait : 74 annotations face à 78 CSV marker et 88 CSV
+chandra.
+
+**Les tableaux coupés par un saut de page sont recollés.** Un tableau à cheval sur deux
+pages arrive en deux blocs, donc en deux CSV — et tous les rangs suivants du SIREN se
+décalent par rapport aux annotations. Le premier tableau d'une page est donc recollé au
+dernier de la précédente lorsque **trois conditions** sont réunies :
+
+- les deux blocs ont la même largeur canonique ;
+- le bloc précédent porte au moins une ligne de données, sans quoi il n'y a rien de sûr à
+  prolonger ;
+- le bloc suivant **commence directement par des données** — il n'a donc pas d'en-tête,
+  donc n'est pas un tableau autonome — ou **rappelle à l'identique l'en-tête** du bloc
+  précédent, qui est alors écarté une fois. Un en-tête propre signe un autre tableau.
+
+Le recollage est restreint aux frontières de page : sur une même page, rien ne distingue
+une coupure d'une succession légitime de deux tableaux. Une page sans tableau rompt la
+continuité. Chez marker, le regroupement suit les blocs `Page` de l'arbre ; chez chandra,
+les pages du JSON — et il précède la normalisation, la largeur canonique et le placement
+des sous-lignes d'en-tête se lisant mieux sur le tableau entier que sur un fragment de fin
+de page.
+
+Ce recollage ne traite qu'une moitié du problème : le découpage. Deux tableaux voisins
+qu'un moteur a fusionnés en un seul restent fusionnés, et l'appariement par rang reste à
+reprendre côté évaluation ([levier 02](ameliorations.qmd)).
 
 **Aucune interprétation du contenu.** Les cellules sont écrites telles qu'elles sortent de
 l'extracteur. Ni les nombres, ni les libellés, ni les cellules vides ne sont touchés.
@@ -187,12 +242,18 @@ manquantes.
 guillemet ou un retour à la ligne). C'est la convention que relisent
 `evaluation_extraction.py` et le [visualiseur de comparaison](comparaison.qmd).
 
-**Une écriture qui ne réécrit jamais.** Un fichier dont le `_1.csv` existe déjà est
-ignoré. Pratique pour reprendre un traitement interrompu, piégeur dès que le code de
-conversion change : régénérer suppose de purger le dossier de sortie au préalable.
+**Une écriture qui ne réécrit pas, sauf demande explicite.** Un fichier dont le `_1.csv`
+existe déjà est ignoré — pratique pour reprendre un traitement interrompu, piégeur dès que
+le code de conversion change. `--overwrite` régénère et **supprime les rangs
+surnuméraires** laissés par le passage précédent : sans cela, un fichier qui produit
+désormais moins de tableaux — ce que fait le recollage — laisserait le dossier de sortie
+mélanger deux générations de conversion. Le récapitulatif de fin rappelle combien de
+fichiers ont été ignorés faute de cette option.
 
-**Un fichier sans aucun tableau détecté est compté en erreur** et ne produit aucun CSV. Il
-disparaît alors silencieusement de l'évaluation, qui ne compare que les paires existantes.
+**Un fichier sans aucun tableau détecté est nommé en fin de traitement** et ne produit
+aucun CSV. Il disparaît de l'évaluation, qui ne compare que les paires existantes : le
+récapitulatif liste ces fichiers, ainsi que ceux tombés en erreur de lecture, les deux
+étant décomptés séparément.
 
 ::: {.callout-note appearance="simple"}
 ## Deux autres sources dans le même script

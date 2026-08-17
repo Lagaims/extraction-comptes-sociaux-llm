@@ -11,9 +11,12 @@ import pytest
 from json_to_csv import (
     ChandraTableExtractor,
     MarkerTableExtractor,
+    _continuation_offset,
+    _merge_page_continuations,
     _normalize_chandra_table,
     _parse_html_tables,
     _rectangularize,
+    _stale_csv_paths,
 )
 
 
@@ -362,6 +365,7 @@ def test_chandra_ligne_label_plus_longue_que_les_donnees():
 
 
 def test_chandra_extractor_parcourt_les_pages():
+    """Deux tableaux d'en-têtes différents restent deux tableaux, page à page."""
     data = {
         "pages": [
             {"page": 1, "tables": [[["a", "b"], ["1", "2"]]]},
@@ -372,3 +376,308 @@ def test_chandra_extractor_parcourt_les_pages():
         [["a", "b"], ["1", "2"]],
         [["c", "d"], ["3", "4"]],
     ]
+
+
+# ── sous-lignes d'en-tête : positions déduites sans vocabulaire ───────────────
+
+
+def test_sous_ligne_entete_placee_dans_le_trou_des_cellules_de_continuation():
+    """La ligne parente est complète : le trou qu'elle porte désigne la position.
+
+    Le moteur a émis les cellules de continuation du libellé couvrant mais livre quand
+    même la sous-ligne à plat. Aucun libellé n'a besoin d'être interprété.
+    """
+    table = [
+        ["SOCIETES", "Valeur d'inventaire", "", "Dividendes"],
+        ["Brute", "Nette"],
+        ["Entité A", "1 734 110", "1 700 000", "12"],
+    ]
+    assert _normalize_chandra_table(table)[:2] == [
+        ["SOCIETES", "Valeur d'inventaire", "", "Dividendes"],
+        ["", "Brute", "Nette", ""],
+    ]
+
+
+def test_sous_ligne_entete_trou_ambigu_reste_a_droite():
+    """Deux trous de la bonne longueur : rien ne dit lequel la sous-ligne détaille."""
+    table = [
+        ["Filiales", "Brut", "", "Net", ""],
+        ["a", "b"],
+        ["Entité A", "1", "2", "3", "4"],
+    ]
+    assert _normalize_chandra_table(table)[1] == ["a", "b", "", "", ""]
+
+
+def test_sous_ligne_entete_placee_sans_vocabulaire_si_un_seul_candidat():
+    """Hors du tableau réglementaire, un unique libellé candidat suffit à trancher.
+
+    La première colonne est exclue : elle porte les libellés de lignes, jamais un
+    en-tête à sous-colonnes.
+    """
+    table = [
+        ["SOCIETES", "Répartition"],
+        ["N", "N-1"],
+        ["Entité A", "1", "2"],
+    ]
+    assert _normalize_chandra_table(table) == [
+        ["SOCIETES", "Répartition", ""],
+        ["", "N", "N-1"],
+        ["Entité A", "1", "2"],
+    ]
+
+
+def test_sous_ligne_entete_deux_candidats_sans_vocabulaire_reste_a_droite():
+    table = [
+        ["SOCIETES", "Alpha", "Beta"],
+        ["a", "b"],
+        ["Entité A", "1", "2", "3"],
+    ]
+    assert _normalize_chandra_table(table)[1] == ["a", "b", "", ""]
+
+
+# ── recollage des tableaux coupés par un saut de page ─────────────────────────
+
+
+ENTETE = ["SOCIETES", "Capital", "Résultat"]
+
+
+def test_recollage_dun_bloc_qui_reprend_directement_en_donnees():
+    """Un bloc sans en-tête n'est pas un tableau autonome : c'est une fin de tableau.
+
+    Sans recollage, il part dans un CSV distinct et décale tous les rangs suivants du
+    SIREN par rapport aux annotations.
+    """
+    data = {
+        "pages": [
+            {"page": 1, "tables": [[ENTETE, ["Entité A", "1 000", "250"]]]},
+            {"page": 2, "tables": [[["Entité B", "2 000", "500"]]]},
+        ]
+    }
+    extractor = ChandraTableExtractor()
+    assert extractor.extract(data) == [
+        [ENTETE, ["Entité A", "1 000", "250"], ["Entité B", "2 000", "500"]]
+    ]
+    assert extractor.merges == 1
+
+
+def test_recollage_ecarte_len_tete_repete_en_tete_de_page():
+    data = {
+        "pages": [
+            {"page": 1, "tables": [[ENTETE, ["Entité A", "1 000", "250"]]]},
+            {"page": 2, "tables": [[ENTETE, ["Entité B", "2 000", "500"]]]},
+        ]
+    }
+    assert ChandraTableExtractor().extract(data) == [
+        [ENTETE, ["Entité A", "1 000", "250"], ["Entité B", "2 000", "500"]]
+    ]
+
+
+def test_pas_de_recollage_quand_len_tete_differe():
+    """Un en-tête propre signe un autre tableau, même à largeur égale."""
+    autre = ["FILIALES", "Prêts", "Cautions"]
+    data = {
+        "pages": [
+            {"page": 1, "tables": [[ENTETE, ["Entité A", "1 000", "250"]]]},
+            {"page": 2, "tables": [[autre, ["Entité B", "2 000", "500"]]]},
+        ]
+    }
+    extractor = ChandraTableExtractor()
+    assert len(extractor.extract(data)) == 2
+    assert extractor.merges == 0
+
+
+def test_pas_de_recollage_a_largeur_differente():
+    data = {
+        "pages": [
+            {"page": 1, "tables": [[ENTETE, ["Entité A", "1 000", "250"]]]},
+            {"page": 2, "tables": [[["Entité B", "2 000"]]]},
+        ]
+    }
+    assert len(ChandraTableExtractor().extract(data)) == 2
+
+
+def test_recollage_ne_concerne_que_le_dernier_tableau_de_la_page():
+    """Le premier tableau d'une page prolonge le dernier de la précédente, pas un autre."""
+    premier = [["ACTIF", "Brut", "Net"], ["Immobilisations", "10", "8"]]
+    data = {
+        "pages": [
+            {"page": 1, "tables": [premier, [ENTETE, ["Entité A", "1 000", "250"]]]},
+            {"page": 2, "tables": [[["Entité B", "2 000", "500"]]]},
+        ]
+    }
+    tables = ChandraTableExtractor().extract(data)
+    assert tables[0] == premier
+    assert tables[1] == [ENTETE, ["Entité A", "1 000", "250"], ["Entité B", "2 000", "500"]]
+
+
+def test_une_page_sans_tableau_rompt_la_continuite():
+    data = {
+        "pages": [
+            {"page": 1, "tables": [[ENTETE, ["Entité A", "1 000", "250"]]]},
+            {"page": 2, "tables": []},
+            {"page": 3, "tables": [[["Entité B", "2 000", "500"]]]},
+        ]
+    }
+    assert len(ChandraTableExtractor().extract(data)) == 2
+
+
+def test_deux_tableaux_voisins_dune_meme_page_ne_sont_pas_recolles():
+    """Sur une même page, rien ne distingue une coupure d'une succession légitime."""
+    data = {
+        "pages": [
+            {
+                "page": 1,
+                "tables": [
+                    [ENTETE, ["Entité A", "1 000", "250"]],
+                    [["Entité B", "2 000", "500"]],
+                ],
+            }
+        ]
+    }
+    assert len(ChandraTableExtractor().extract(data)) == 2
+
+
+def test_recollage_marker_entre_deux_blocs_page():
+    """Le recollage vaut pour marker aussi : ses tableaux sont groupés par bloc `Page`."""
+    page_1 = (
+        "<table><tbody><tr><th>SOCIETES</th><th>Capital</th><th>Résultat</th></tr>"
+        "<tr><td>Entité A</td><td>1 000</td><td>250</td></tr></tbody></table>"
+    )
+    page_2 = "<table><tbody><tr><td>Entité B</td><td>2 000</td><td>500</td></tr></tbody></table>"
+    data = {
+        "block_type": "Document",
+        "children": [
+            {"block_type": "Page", "children": [{"block_type": "Table", "html": page_1}]},
+            {"block_type": "Page", "children": [{"block_type": "Table", "html": page_2}]},
+        ],
+    }
+    assert MarkerTableExtractor().extract(data) == [
+        [ENTETE, ["Entité A", "1 000", "250"], ["Entité B", "2 000", "500"]]
+    ]
+
+
+def test_recollage_laisse_la_normalisation_trancher_la_largeur():
+    """Le recollage ne rectangularise pas : la ligne-label ne doit pas fixer la largeur.
+
+    Une grille rectangularisée avant normalisation ferait passer l'intertitre pour une
+    ligne à la largeur du tableau, et ses colonnes vides s'imposeraient à toutes les
+    autres lignes.
+    """
+    data = {
+        "pages": [
+            {
+                "page": 1,
+                "tables": [
+                    [["", "", "", "A - FILIALES DÉTENUES À 50 %"], ENTETE, ["Entité A", "1", "2"]]
+                ],
+            },
+            {"page": 2, "tables": [[["Entité B", "3", "4"]]]},
+        ]
+    }
+    assert ChandraTableExtractor().extract(data) == [
+        [
+            ["A - FILIALES DÉTENUES À 50 %", "", ""],
+            ENTETE,
+            ["Entité A", "1", "2"],
+            ["Entité B", "3", "4"],
+        ]
+    ]
+
+
+def test_continuation_offset_refuse_un_bloc_sans_donnees():
+    """Un bloc qui n'a aucune ligne de données n'est pas un tableau à recoller."""
+    assert _continuation_offset([ENTETE], [["Entité B", "2 000", "500"]]) is None
+    assert _continuation_offset([ENTETE, ["Entité A", "1", "2"]], [["titre"]]) is None
+    assert _continuation_offset([], [["Entité B", "2 000", "500"]]) is None
+
+
+def test_merge_page_continuations_compte_les_recollages():
+    suite = [["Entité B", "2 000", "500"]]
+    pages = [[[ENTETE, ["Entité A", "1 000", "250"]]], [suite], [suite]]
+    tables, merges = _merge_page_continuations(pages)
+    assert len(tables) == 1
+    assert len(tables[0]) == 4
+    assert merges == 2
+
+
+# ── marker : un seul tableau par `TableGroup`, garanti par le code ────────────
+
+
+def test_table_group_ecarte_au_profit_de_ses_blocs_table():
+    """Un `TableGroup` et ses enfants `Table` décrivent le même tableau.
+
+    Le `html` d'un `TableGroup` ne porte en principe que des pointeurs `<content-ref>`,
+    qui ne produisent aucune cellule — mais rien dans le format ne le garantit. La
+    déduplication doit venir du code, pas de la forme de la sortie du moteur.
+    """
+    data = {
+        "block_type": "Page",
+        "children": [
+            {
+                "block_type": "TableGroup",
+                "html": "<content-ref src='/page/0/Table/12'></content-ref>",
+                "children": [
+                    {
+                        "block_type": "Table",
+                        "html": "<table><tbody><tr><td>Entité A</td><td>1</td></tr></tbody></table>",
+                        "children": [],
+                    }
+                ],
+            }
+        ],
+    }
+    assert MarkerTableExtractor().extract(data) == [[["Entité A", "1"]]]
+
+
+def test_table_group_portant_lui_meme_un_table_ne_duplique_pas():
+    """Même quand le groupe porte un `<table>` complet, le tableau ne sort qu'une fois."""
+    html = "<table><tbody><tr><td>Entité A</td><td>1</td></tr></tbody></table>"
+    data = {
+        "block_type": "Page",
+        "children": [
+            {
+                "block_type": "TableGroup",
+                "html": html,
+                "children": [{"block_type": "Table", "html": html, "children": []}],
+            }
+        ],
+    }
+    assert MarkerTableExtractor().extract(data) == [[["Entité A", "1"]]]
+
+
+def test_table_group_sans_bloc_table_reste_retenu():
+    """Un groupe qui porte seul le HTML du tableau doit être conservé."""
+    data = {
+        "block_type": "Page",
+        "children": [
+            {
+                "block_type": "TableGroup",
+                "html": "<table><tbody><tr><td>Entité A</td><td>1</td></tr></tbody></table>",
+                "children": [],
+            }
+        ],
+    }
+    assert MarkerTableExtractor().extract(data) == [[["Entité A", "1"]]]
+
+
+# ── régénération : purge des rangs surnuméraires ──────────────────────────────
+
+
+def test_stale_csv_paths_ne_retient_que_les_rangs_au_dela_du_compte():
+    existing = [
+        "bucket/out/123456789_1.csv",
+        "bucket/out/123456789_2.csv",
+        "bucket/out/123456789_3.csv",
+    ]
+    assert _stale_csv_paths(existing, "123456789", 2) == ["bucket/out/123456789_3.csv"]
+    assert _stale_csv_paths(existing, "123456789", 3) == []
+
+
+def test_stale_csv_paths_ignore_les_autres_radicaux():
+    """Un radical qui en préfixe un autre ne doit pas emporter ses fichiers."""
+    existing = [
+        "bucket/out/TAB_123_1.csv",
+        "bucket/out/TAB_123_bis_4.csv",
+        "bucket/out/TAB_1234_9.csv",
+    ]
+    assert _stale_csv_paths(existing, "TAB_123", 1) == []
