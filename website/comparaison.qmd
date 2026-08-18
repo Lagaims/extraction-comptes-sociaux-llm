@@ -4,21 +4,23 @@ subtitle: "Grille annotée à la main face à la grille extraite, cellule par ce
 toc: false
 ---
 
-Chaque tableau annoté est confronté à ce que chaque moteur en a extrait. Les cellules
-de la zone de données de l'annotation sont colorées par statut ; **survoler une cellule
-met en évidence la cellule appariée dans l'autre grille**, ce qui rend le décalage
+Chaque tableau annoté est confronté à ce que chaque moteur en a extrait. **La couleur porte
+sur la grille annotée**, qui est la référence : statut de chaque valeur dans la zone de
+données, vert ou rouge sur les en-têtes de lignes et de colonnes selon qu'ils ont été
+appariés. La grille extraite reste neutre. Survoler une cellule met en évidence la cellule —
+ou la ligne, ou la colonne — appariée dans la prédiction, ce qui rend le décalage
 directement lisible.
 
 ::: {.callout-note appearance="simple"}
 ## Origine des grilles
 
-Les grilles extraites sont les CSV de `reprise/output_csv/`, produits par
-[la conversion décrite ici](conversion.qmd). Les décalages de colonnes visibles relèvent
-soit des fusions que le format d'entrée ne transmet pas, soit d'un écart de structure
-d'en-tête présent dès la source.
+Les grilles extraites sont les CSV de `reprise/output_csv/`, produits par [la conversion
+décrite ici](conversion.qmd). Les décalages de colonnes visibles relèvent soit des fusions
+que le format d'entrée ne transmet pas, soit d'un écart de structure d'en-tête présent dès
+la source.
 :::
 
-::: {.dx-controls}
+::: {.dx-controls .column-screen-inset}
 ::: {.dx-control}
 [Tableau]{}
 ```{=html}
@@ -54,11 +56,14 @@ d'en-tête présent dès la source.
 :::
 :::
 
+::: {.column-screen-inset}
 ```{=html}
 <div id="dx-app" aria-live="polite"></div>
 ```
+:::
 
-::: {.dx-status-legend}
+::: {.dx-status-legend .column-screen-inset}
+[**Zone de données**]{.dx-legend-head}
 [[]{.dx-chip style="background:var(--dx-st-ok-bg)"} Valeur correcte]{}
 [[]{.dx-chip style="background:var(--dx-st-format-bg)"} Mêmes chiffres, format différent]{}
 [[]{.dx-chip style="background:var(--dx-st-ocr-bg)"} Erreur de lecture de chiffres]{}
@@ -66,32 +71,36 @@ d'en-tête présent dès la source.
 [[]{.dx-chip style="background:var(--dx-st-manquante-bg)"} Cellule vide, valeur perdue]{}
 [[]{.dx-chip style="background:var(--dx-st-differente-bg)"} Valeur franchement différente]{}
 [[]{.dx-chip style="background:var(--dx-st-nonapp-bg)"} Ligne ou colonne non appariée]{}
+
+[**En-têtes de la grille annotée**]{.dx-legend-head}
+[[]{.dx-chip style="background:var(--dx-st-ok-bg);border-color:var(--dx-st-ok-ink)"} Libellé apparié]{}
+[[]{.dx-chip style="background:var(--dx-st-manquante-bg);border-color:var(--dx-st-manquante-ink)"} Libellé non apparié]{}
 [[]{.dx-chip style="background:var(--dx-surface-2);border-color:var(--dx-rule)"} Zone d'en-tête détectée]{}
 :::
 
 ::: {.callout-note appearance="simple" collapse="true"}
 ## Comment lire ces grilles
 
-**Les numéros de lignes et de colonnes** sont ceux de la grille brute, en partant de
-zéro. Ils permettent de comparer les positions entre les deux grilles.
-
-**La zone d'en-tête grisée** est celle que `detect_column_header_height` et
-`detect_row_header_width` ont détectée — pas celle de la maquette d'origine. Quand la
-zone grisée de l'annotation et celle de la prédiction n'ont pas la même hauteur, tout
-le reste du tableau est décalé : c'est la cause d'échec principale du pipeline.
-
-**Seules les cellules de la zone de données de l'annotation portent un statut.** Les
-cellules d'en-tête et les cellules non numériques ne sont pas évaluées par la métrique
-et restent neutres.
-
-**Le statut « valeur extraite mais ailleurs »** signifie que la valeur attendue existe
-bien dans le CSV, mais pas à la position appariée. C'est le cas le plus fréquent, et le
-plus révélateur : la lecture est bonne, le placement non.
-
-**Les libellés sont affichés tels quels** — raisons sociales comprises : un écart de
-libellé entre annotation et prédiction est lui-même un symptôme d'erreur de lecture, et
-doit rester visible. Le tableau est désigné par son nom de fichier d'origine
-(`{siren}_{rang}`).
+- **Les en-têtes de lignes et de colonnes de la grille annotée sont verts ou rouges** selon
+  que leur libellé a été apparié à celui de la prédiction. Rouge = les valeurs de cette
+  ligne ou de cette colonne ne peuvent pas être comparées, quoi qu'ait lu le moteur. Le
+  coin haut-gauche, qui relève des deux axes, reste neutre.
+- **Les numéros de lignes et colonnes** reprennent la même couleur, pour rester lisibles
+  quand la grille défile ; ils sont ceux de la grille brute, à partir de zéro.
+- **Survoler un en-tête** met en évidence la ligne ou la colonne appariée dans la grille
+  extraite.
+- **La zone d'en-tête grisée** est celle détectée par `detect_column_header_height` et
+  `detect_row_header_width`, pas celle de la maquette d'origine. Deux zones grisées de
+  hauteurs différentes = tout le reste du tableau est décalé — la cause d'échec principale
+  du pipeline.
+- **Seules les cellules de la zone de données de l'annotation portent un statut.** En-têtes
+  et cellules non numériques ne sont pas évalués et restent neutres.
+- **« Valeur extraite mais ailleurs »** = la valeur attendue existe dans le CSV, mais pas à
+  la position appariée. C'est le cas le plus fréquent et le plus révélateur : la lecture est
+  bonne, le placement non.
+- **Les libellés sont affichés tels quels**, raisons sociales comprises : un écart de
+  libellé est lui-même un symptôme, il doit rester visible. Chaque tableau est désigné par
+  son nom de fichier d'origine (`{siren}_{rang}`).
 :::
 
 ```{=html}
@@ -206,10 +215,26 @@ doit rester visible. Le tableau est désigné par son nom de fichier d'origine
   // ── Rendu d'une grille ────────────────────────────────────────────────────
 
   function buildGrid(grid, opts) {
-    // opts : {side, headerRows, headerCols, status, rowMatch, colMatch, nCols}
+    // opts : {side, headerRows, headerCols, status, rowLink, colLink, nCols}
+    // L'appariement n'est porté que par la grille annotée : c'est elle qui est la
+    // référence, et c'est depuis elle que se lit ce qui a été retrouvé ou perdu.
+    // La grille prédite reste neutre, pour que la couleur ne désigne qu'une chose.
     var wrap = el("div", "dx-grid-scroll");
     var table = el("table", "dx-grid");
     var nCols = opts.nCols;
+    var rowLink = opts.rowLink || {};
+    var colLink = opts.colLink || {};
+    var tint = !!opts.rowLink;
+
+    function linkOf(map, i) {
+      if (!tint) return null;
+      var v = map[String(i)];
+      return v === undefined ? null : String(v);
+    }
+
+    function idxClass(to) {
+      return "dx-idx" + (tint ? (to ? " dx-idx-ok" : " dx-idx-no") : "");
+    }
 
     var colgroup = el("colgroup");
     colgroup.appendChild(el("col"));
@@ -226,8 +251,14 @@ doit rester visible. Le tableau est désigné par son nom de fichier d'origine
     corner.scope = "col";
     hrow.appendChild(corner);
     for (var c2 = 0; c2 < nCols; c2++) {
-      var th = el("th", "dx-idx", String(c2));
+      var to = linkOf(colLink, c2);
+      var th = el("th", idxClass(to), String(c2));
       th.scope = "col";
+      if (tint) {
+        th.title = to
+          ? "colonne " + c2 + " appariée à la colonne " + to + " de la prédiction"
+          : "colonne " + c2 + " non appariée";
+      }
       hrow.appendChild(th);
     }
     thead.appendChild(hrow);
@@ -237,8 +268,14 @@ doit rester visible. Le tableau est désigné par son nom de fichier d'origine
     for (var r = 0; r < grid.length; r++) {
       var tr = el("tr");
       tr.dataset.row = String(r);
-      var rh = el("th", "dx-idx", String(r));
+      var rowTo = linkOf(rowLink, r);
+      var rh = el("th", idxClass(rowTo), String(r));
       rh.scope = "row";
+      if (tint) {
+        rh.title = rowTo
+          ? "ligne " + r + " appariée à la ligne " + rowTo + " de la prédiction"
+          : "ligne " + r + " non appariée";
+      }
       tr.appendChild(rh);
       for (var c3 = 0; c3 < nCols; c3++) {
         var value = grid[r][c3] === undefined ? "" : grid[r][c3];
@@ -246,19 +283,32 @@ doit rester visible. Le tableau est désigné par son nom de fichier d'origine
         td.dataset.row = String(r);
         td.dataset.col = String(c3);
         td.dataset.side = opts.side;
-        if (r < opts.headerRows || c3 < opts.headerCols) td.classList.add("dx-hdr");
+        var inHdrRow = r < opts.headerRows;
+        var inHdrCol = c3 < opts.headerCols;
+        if (inHdrRow || inHdrCol) td.classList.add("dx-hdr");
+        // Un libellé d'en-tête porte le sort de toute la ligne — ou de toute la
+        // colonne — qu'il commande : appariée en vert, non appariée en rouge. Le
+        // coin haut-gauche relève des deux axes à la fois et reste neutre.
+        var role = null;
+        var roleTo = null;
+        if (tint && inHdrCol && !inHdrRow) { role = "row"; roleTo = rowTo; }
+        else if (tint && inHdrRow && !inHdrCol) { role = "col"; roleTo = linkOf(colLink, c3); }
+        if (role) {
+          td.classList.add(roleTo ? "dx-hm-ok" : "dx-hm-no");
+          td.dataset.hrole = role;
+          if (roleTo) td.dataset.hlink = roleTo;
+        }
         var status = opts.status ? opts.status[r + "," + c3] : null;
         if (status && STATUS_CLASS[status]) {
           td.classList.add(STATUS_CLASS[status]);
           td.dataset.status = status;
         }
         // La cellule appariée de l'autre grille, pour le survol lié.
-        if (opts.side === "ann" && opts.rowMatch && opts.colMatch) {
-          var pr = opts.rowMatch[String(r)];
-          var pc = opts.colMatch[String(c3)];
-          if (pr !== undefined && pc !== undefined) {
-            td.dataset.linkRow = String(pr);
-            td.dataset.linkCol = String(pc);
+        if (opts.side === "ann" && rowTo !== null) {
+          var pc = linkOf(colLink, c3);
+          if (pc !== null) {
+            td.dataset.linkRow = rowTo;
+            td.dataset.linkCol = pc;
           }
         }
         tr.appendChild(td);
@@ -291,7 +341,7 @@ doit rester visible. Le tableau est désigné par son nom de fichier d'origine
     return pane;
   }
 
-  function summaryLine(result) {
+  function summaryLine(result, nRows, nCols) {
     var box = el("div", "dx-summary");
     function item(label, value) {
       var s = el("span");
@@ -301,6 +351,8 @@ doit rester visible. Le tableau est désigné par son nom de fichier d'origine
     }
     item("Valeurs attendues", String(result.expected));
     item("Récupérées", result.recovered + " (" + pct(result.recoveryRate) + ")");
+    item("Lignes appariées", Object.keys(result.rowMatch || {}).length + " / " + nRows);
+    item("Colonnes appariées", Object.keys(result.colMatch || {}).length + " / " + nCols);
     item("En-tête annotation", result.annHeaderRows + " ligne(s)");
     item("En-tête prédiction", result.predHeaderRows + " ligne(s)");
     var flag = el(
@@ -336,15 +388,18 @@ doit rester visible. Le tableau est désigné par son nom de fichier d'origine
       ? DATA.meta.methods.filter(function (m) { return table.methods[m]; })
       : [selMethod.value];
 
-    var annCols = maxCols(table.ann);
-
     methods.forEach(function (method) {
       var result = table.methods[method];
       if (!result) return;
 
+      // L'annotation n'est portée par la méthode que si elle diffère de celle du
+      // tableau — cas d'un moteur qui a recollé un saut de page et de l'autre non.
+      var ann = result.ann || table.ann;
+      var annCols = maxCols(ann);
+
       var block = el("section", "dx-fig");
       block.appendChild(el("p", "dx-fig-title", table.id + " — " + method));
-      block.appendChild(summaryLine(result));
+      block.appendChild(summaryLine(result, ann.length, annCols));
       var counts = countsLine(result);
       if (counts) block.appendChild(counts);
 
@@ -352,14 +407,14 @@ doit rester visible. Le tableau est désigné par son nom de fichier d'origine
       panes.appendChild(buildPane(
         "Annoté à la main",
         null,
-        table.ann.length + " × " + annCols,
-        buildGrid(table.ann, {
+        ann.length + " × " + annCols,
+        buildGrid(ann, {
           side: "ann",
-          headerRows: table.annHeaderRows,
-          headerCols: table.annHeaderCols,
+          headerRows: result.annHeaderRows,
+          headerCols: result.annHeaderCols,
           status: result.status,
-          rowMatch: result.rowMatch,
-          colMatch: result.colMatch,
+          rowLink: result.rowMatch,
+          colLink: result.colMatch,
           nCols: annCols
         })
       ));
@@ -407,6 +462,16 @@ doit rester visible. Le tableau est désigné par son nom de fichier d'origine
       var r = td.dataset.row, c = td.dataset.col;
       var status = td.dataset.status;
       var parts = ["ligne " + r + ", colonne " + c];
+      var role = td.dataset.hrole;
+      if (role) {
+        var axis = role === "row" ? "ligne" : "colonne";
+        parts.push("en-tête de " + axis + " : " + JSON.stringify(td.textContent));
+        parts.push(td.dataset.hlink !== undefined
+          ? "→ apparié à la " + axis + " " + td.dataset.hlink + " de la prédiction"
+          : "→ non apparié : les valeurs de cette " + axis + " ne peuvent pas être comparées");
+        info.textContent = parts.join("  ·  ");
+        return;
+      }
       if (td.dataset.side === "ann") {
         parts.push("attendu : " + JSON.stringify(td.textContent));
         if (td.dataset.linkRow !== undefined) {
@@ -438,6 +503,18 @@ doit rester visible. Le tableau est désigné par son nom de fichier d'origine
         var sel = 'td[data-row="' + td.dataset.linkRow + '"][data-col="' + td.dataset.linkCol + '"]';
         var target = pane ? pane.querySelector(sel) : null;
         if (target) target.classList.add("dx-linked");
+      }
+      // Sur un libellé d'en-tête, le lien porte sur toute la ligne ou toute la
+      // colonne appariée — c'est ce qui rend le décalage de structure lisible.
+      var facing = panes.children[1];
+      if (facing && td.dataset.hrole && td.dataset.hlink !== undefined) {
+        if (td.dataset.hrole === "row") {
+          var otr = facing.querySelector('tr[data-row="' + td.dataset.hlink + '"]');
+          if (otr) otr.classList.add("dx-row-hl");
+        } else {
+          var ocol = facing.querySelector('col[data-col="' + td.dataset.hlink + '"]');
+          if (ocol) ocol.classList.add("dx-col-hl");
+        }
       }
       describe(td);
     }

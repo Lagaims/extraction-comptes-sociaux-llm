@@ -3,14 +3,14 @@ title: "Améliorations"
 subtitle: "Cinq leviers classés par impact mesuré"
 ---
 
-Le classement suit l'impact mesuré, pas la difficulté. Les gains chiffrés ont été
-obtenus en rejouant l'évaluation sur le même corpus avec le levier isolé — ils **ne
-s'additionnent pas** : les leviers 3 et 4 corrigent en partie les mêmes cellules.
+Le classement suit l'impact mesuré, pas la difficulté. Chaque gain a été obtenu en
+rejouant l'évaluation sur le même corpus avec le levier isolé — ils **ne s'additionnent
+pas** : les leviers 03 et 04 corrigent en partie les mêmes cellules.
 
-Avant tout : les erreurs de lecture de chiffres représentent 0,8 % des cellules chez
-marker et 1,4 % chez chandra, concentrées sur une dizaine de fichiers mal numérisés
-([détail du calcul](chiffres.qmd#erreurs-de-transcription)). Aucun des leviers ne porte
-sur l'OCR. Améliorer le moteur de reconnaissance est la piste la moins rentable du lot.
+**Aucun levier ne porte sur l'OCR** : les erreurs de lecture de chiffres pèsent 0,8 % des
+cellules chez marker et 1,4 % chez chandra, concentrées sur une dizaine de fichiers mal
+numérisés ([détail](chiffres.qmd#erreurs-de-transcription)). Améliorer le moteur de
+reconnaissance est la piste la moins rentable du lot.
 
 ## Les cinq leviers
 
@@ -19,85 +19,78 @@ sur l'OCR. Améliorer le moteur de reconnaissance est la piste la moins rentable
 
 ### Corriger la détection de hauteur d'en-tête
 
-**Le garde-fou qui compte** — `detect_column_header_height` décide seule du point de
-départ de la zone de données et du texte d'en-tête concaténé. Une erreur de ±1 y coûte
-tout le tableau. Elle mérite un jeu de tests dédié sur les tableaux de filiales et
-participations, et une mesure de repli : si la hauteur détectée diffère entre annotation
-et prédiction, mesurer aussi la variante décalée et retenir la meilleure — sinon on impute
-au moteur ce que produit le détecteur.
+`detect_column_header_height` décide seule du début de la zone de données et du texte
+d'en-tête concaténé. **Une erreur de ±1 coûte tout le tableau.**
+
+- Lui donner un **jeu de tests dédié** sur les tableaux de filiales et participations.
+- Ajouter une **mesure de repli** : si la hauteur détectée diffère entre annotation et
+  prédiction, mesurer aussi la variante décalée et retenir la meilleure — sinon on impute
+  au moteur ce que produit le détecteur.
 
 ::: {.dx-evidence}
-**Preuve.** Hauteur d'en-tête discordante sur 32 fichiers marker sur 69 et 21 chandra
-sur 70. Récupération numérique : **62,1 % quand elle concorde, 41,3 % sinon** (marker) ;
-73,0 % contre 39,3 % (chandra). Le décalage global optimal égale l'écart de hauteur
-d'en-tête fichier par fichier — 34 cas sur 36 pour un écart nul, 11 sur 13 pour un écart
-de +1. Sur les 53 fichiers discordants, **31 ont une source parfaitement régulière** —
-lignes de longueur homogène, aucune fusion à reconstituer : là, le moteur a produit une
-structure d'en-tête différente, et aucune correction de la conversion n'y changera rien.
+**Preuve.** Hauteur discordante sur 32 fichiers marker sur 69 et 21 chandra sur 69.
+Récupération numérique : **64,0 % quand elle concorde, 41,8 % sinon** (marker) ; 73,2 %
+contre 42,2 % (chandra). Le décalage global optimal égale l'écart de hauteur fichier par
+fichier (34 cas sur 36 pour un écart nul, 11 sur 13 pour +1). Mais sur les 53 fichiers
+discordants, **40 ont une source parfaitement régulière** : là, l'écart de structure est en
+amont et aucune correction de la conversion n'y changera rien.
 :::
 ::::
 
 :::: {.dx-finding}
-[02]{.dx-rank} [≈ 14 % des valeurs, 13 fichiers]{.dx-impact}
+[02]{.dx-rank} [≈ 14 % des valeurs, 11 fichiers]{.dx-impact}
 
 ### Réapparier les tableaux autrement que par leur rang
 
-`_list_pairs` apparie `{siren}_1.xlsx` à `{siren}_1.csv`. Dès que le moteur découpe un
-tableau en deux ou en fusionne deux, les rangs se désynchronisent et toute la suite du
-SIREN est comparée de travers. Le nombre de tableaux détectés diffère de la référence sur
-**14 SIREN sur 48 pour marker** (9 sur-détections, 5 sous-détections) et 14 sur 48 pour
-chandra (10 sur-détections, 4 sous-détections).
+`_list_pairs` apparie `{siren}_1.xlsx` à `{siren}_1.csv`. Dès que le moteur découpe ou
+fusionne un tableau, les rangs se désynchronisent et toute la suite du SIREN est comparée
+de travers. Sur `TAB_300221017_1`, l'annotation compte 39 lignes et le CSV comparé en a 3.
 
-L'effet est brutal quand il se produit : sur `TAB_300221017_1`, l'annotation compte 39
-lignes et le CSV comparé en a 3 — l'essentiel des valeurs attendues se trouve dans l'autre
-CSV du même SIREN.
+Le nombre de tableaux détectés diffère de la référence sur **12 SIREN sur 48 (marker)** et
+13 sur 47 (chandra) — contre 14 et 14 avant le recollage symétrique. Deux chantiers
+distincts :
 
-Deux chantiers distincts, à ne pas confondre :
-
-- **côté pipeline**, la détection de frontière de tableau — un tableau à cheval sur deux
-  pages est coupé, et deux tableaux voisins sont parfois fusionnés. Le premier des deux cas
-  est désormais traité à la conversion : un bloc de début de page qui n'a pas d'en-tête, ou
-  qui répète celui du bloc précédent, est recollé à lui
-  ([règle](conversion.qmd#ce-que-les-deux-chemins-partagent)). Le second — deux tableaux
-  fusionnés en un — reste ouvert, et le corpus n'a pas été reconverti depuis, donc le gain
-  n'est pas encore mesuré ;
-- **côté évaluation**, l'appariement, qui devrait se faire par similarité de contenu
-  (chevauchement des libellés de lignes, par exemple) plutôt que par rang. Sinon le score
+- **Côté pipeline — la détection de frontière de tableau.** Le cas du tableau coupé par un
+  saut de page est **traité** : un bloc de début de page sans en-tête, ou qui répète celui
+  du précédent, y est recollé
+  ([règle](conversion.qmd#ce-que-les-deux-chemins-partagent)), des deux côtés de la
+  mesure. Reste ouvert : **deux tableaux voisins fusionnés en un**, soit trois
+  sous-détections par moteur.
+- **Côté évaluation — l'appariement lui-même**, qui devrait se faire par similarité de
+  contenu (chevauchement des libellés de lignes) plutôt que par rang. Sinon le score
   mesure la chance d'un alignement d'index.
 
-Le second est bien moins coûteux que le premier et débloque la mesure du premier : sans
-appariement fiable, on ne peut pas savoir si une correction de la détection de frontière
-améliore quoi que ce soit.
+Le second est bien moins coûteux et **débloque la mesure du premier** : sans appariement
+fiable, impossible de savoir si une correction de la segmentation améliore quoi que ce
+soit.
 
 ::: {.dx-evidence}
-**Preuve.** 14,3 % des valeurs marker et 12,1 % des valeurs chandra (≥ 4 chiffres) sont
-absentes du CSV comparé mais présentes dans un autre CSV du même SIREN.
+**Preuve.** 14,1 % des valeurs marker et 12,2 % des valeurs chandra (≥ 4 chiffres) sont
+absentes du CSV comparé mais présentes dans un autre CSV du même SIREN. Le recollage
+symétrique a déjà rendu 93 cellules marker à la mesure, dont 62 correctement extraites.
 :::
 ::::
 
 :::: {.dx-finding}
-[03]{.dx-rank} [+5,8 pts marker · +6,7 pts chandra]{.dx-impact}
+[03]{.dx-rank} [+5,8 pts marker · +6,6 pts chandra]{.dx-impact}
 
 ### Traiter le décalage d'une colonne, massif chez chandra
 
-Une fois ligne et colonne appariées, la valeur attendue se trouve souvent à une colonne de
-là. Avec une tolérance de ±1 colonne, la récupération numérique passe de 49,7 à 55,5 %
-pour marker et de 57,2 à 63,9 % pour chandra.
+Une fois ligne et colonne appariées, la valeur attendue se trouve souvent une colonne plus
+loin. Avec une tolérance de ±1 colonne, la récupération numérique passe de 51,1 à 56,8 %
+(marker) et de 58,3 à 64,9 % (chandra).
 
-Attention à l'usage : `--cell-delta 1` existe déjà mais ne s'applique qu'à
-`total_extraction`, pas à `numeric_recovery`, malgré ce qu'annonce l'aide de l'option. En
-l'état, l'option ne fait pas ce qu'elle dit — c'est un correctif à part entière,
-indépendamment de la question du décalage.
-
-Une tolérance reste un pansement : elle masque le décalage sans le corriger et rend le
-score moins exigeant. Elle a sa place comme **mesure de diagnostic** — publier les deux
-colonnes, tolérance nulle et tolérance ±1, pour objectiver la part du décalage — pas comme
-réglage par défaut. L'écart entre les deux colonnes est d'ailleurs un bon indicateur de
-suivi : il doit se réduire à mesure que les fusions et les en-têtes s'alignent.
+- **Bug à corriger d'abord :** `--cell-delta 1` existe mais ne s'applique qu'à
+  `total_extraction`, pas à `numeric_recovery`, contrairement à ce qu'annonce son aide.
+- **À n'utiliser que comme diagnostic**, pas comme réglage par défaut : la tolérance masque
+  le décalage sans le corriger. Publier les deux colonnes, tolérance nulle et ±1.
+- **Bon indicateur de suivi :** l'écart entre ces deux colonnes doit se réduire à mesure
+  que les fusions et les en-têtes s'alignent.
 
 ::: {.dx-evidence}
-**Preuve.** 171 cellules marker et 545 cellules chandra sont dans la catégorie « bonne
-ligne, colonne décalée » — 3,2 % et 10,1 % des cellules attendues.
+**Preuve.** 177 cellules marker et 555 cellules chandra sont en « bonne ligne, colonne
+décalée » — 3,2 % et 10,3 % des cellules attendues ; la tolérance ±1 en rattrape 316 et
+356.
 :::
 ::::
 
@@ -106,29 +99,23 @@ ligne, colonne décalée » — 3,2 % et 10,1 % des cellules attendues.
 
 ### Rendre l'appariement des libellés robuste aux variantes typographiques
 
-L'appariement compare des libellés par distance de Levenshtein brute, puis applique le
-seuil de 0,5 *après* le matching stable. Trois faiblesses, mesurées en rejouant
-l'évaluation avec chaque variante.
+L'appariement compare les libellés par distance de Levenshtein brute, puis applique le
+seuil de 0,5 *après* le matching stable. Trois faiblesses :
 
-**Casse, accents et ponctuation comptent.** `'A - FILIALES DETENUES'` contre
-`'A – FILIALES DETENUES'` — un tiret demi-cadratin — tombe à 0,26 de similarité.
-Normaliser avant comparaison (minuscules, accents dépliés, ponctuation réduite) : +1,8 pt
-de `col_recovery`.
-
-**Un mot ajouté fait chuter la similarité.** `'Capital'` contre `'Capital | Nette'` donne
-0,47, juste sous le seuil. Une similarité par inclusion de jetons, combinée à Levenshtein :
-+6,1 pts de `col_recovery` (0,781 → 0,842).
-
-**L'appariement stable ne maximise pas la similarité totale** et le seuil appliqué ensuite
-jette des paires valides : 16 cas pour marker où un candidat au-dessus de 0,5 existait. Le
-remplacer par un appariement optimal (Hongrois), ou mieux par un alignement monotone qui
-respecte l'ordre des lignes — un tableau ne permute pas ses lignes : récupération numérique
-globale 42,0 → 47,6 %.
+- **Casse, accents et ponctuation comptent.** `'A - FILIALES DETENUES'` contre
+  `'A – FILIALES DETENUES'` — un tiret demi-cadratin — tombe à 0,26. Normaliser avant
+  comparaison : **+1,8 pt de `col_recovery`**.
+- **Un mot ajouté fait chuter la similarité.** `'Capital'` contre `'Capital | Nette'`
+  donne 0,47, juste sous le seuil. Une similarité par inclusion de jetons combinée à
+  Levenshtein : **+6,1 pts de `col_recovery`** (0,781 → 0,842).
+- **L'appariement stable ne maximise pas la similarité totale**, et le seuil appliqué
+  ensuite jette des paires valides (16 cas chez marker). Le remplacer par un appariement
+  optimal (Hongrois), ou mieux par un **alignement monotone** qui respecte l'ordre des
+  lignes : **récupération numérique 42,0 → 47,6 %**.
 
 L'alignement monotone a un second avantage, propre à ce corpus : il rend impossible
-l'appariement croisé de deux filiales d'un même groupe dont les noms se ressemblent,
-erreur observée à plusieurs reprises et que ni le seuil ni l'appariement stable
-n'empêchent.
+l'appariement croisé de deux filiales d'un même groupe aux noms voisins — erreur observée
+à plusieurs reprises, que ni le seuil ni l'appariement stable n'empêchent.
 
 ::: {.dx-scroll}
 
@@ -144,8 +131,8 @@ n'empêchent.
 
 :::
 
-À noter : ces gains restent modestes au regard du levier 01. L'algorithme d'appariement
-n'est pas le problème principal — il ne fait que révéler des tableaux déjà décalés.
+Ces gains restent modestes au regard du levier 01 : l'algorithme d'appariement ne fait que
+révéler des tableaux déjà décalés.
 
 ::::
 
@@ -164,56 +151,47 @@ mais laisse passer trois familles d'écarts purement typographiques — 36 cellu
 | Signe négatif détaché | `- 30 000` | `-30 000` |
 | Parenthèses comptables | `1 976` | `(1 976)` |
 
-Le troisième cas mérite une mention : les parenthèses comptables sont reconnues par
-`_looks_numeric` pour la détection d'en-tête, mais pas par la comparaison, qui bascule en
-mode strict et les compte comme fausses. Les deux fonctions ont des notions différentes de
-ce qu'est un nombre.
+Le troisième cas est révélateur : les parenthèses comptables sont reconnues par
+`_looks_numeric` pour la détection d'en-tête, mais pas par la comparaison, qui les compte
+comme fausses. **Les deux fonctions n'ont pas la même notion de « nombre ».**
 
-Peu de cellules, mais c'est du bruit qui se mélange aux vraies erreurs de lecture et
-complique la lecture de toutes les autres métriques.
+Peu de cellules, mais c'est du bruit qui se mélange aux vraies erreurs de lecture.
 
 ::::
 
 ## Corrections de mesure, à faire en parallèle
 
 Ces trois points ne changent pas la qualité de l'extraction — ils changent ce que les
-chiffres veulent dire. À traiter avant de publier une nouvelle campagne de mesure, faute de
-quoi les gains des leviers seront illisibles.
+chiffres veulent dire. À traiter **avant** de publier une nouvelle campagne, faute de quoi
+les gains des leviers seront illisibles.
 
-**Sortir les cellules vides du dénominateur.** 34,4 % des cellules comptées dans
-`numeric_recovery` sont des cellules vides de l'annotation, créditées quand la prédiction
-est vide au même endroit. Les compter séparément — une métrique de « vides bien laissés
-vides » a un sens propre — et publier la version pondérée par cellule à côté de la moyenne
-par fichier, qui surpondère les petits tableaux (0,90 sous 40 cellules, 0,45 au-delà de
-260).
-
-**Rendre visible l'absence d'une méthode déclarée.** `opendataloader` figure dans
-`METHODS` mais ne produit aucun CSV : il disparaît du parquet sans avertissement. Soit il
-sort du périmètre et de `METHODS`, soit l'évaluation lève un avertissement explicite quand
-une méthode déclarée ne fournit rien. Sur les 48 sorties HTML, 12 seulement contiennent une
-balise `<table>`.
-
-**Vérifier l'appariement de `marker_last_work` avant d'en conclure une régression.** C'est
-la configuration la plus récente et la moins bonne (`total_extraction` à 0,043), mais elle
-passe par `_list_pairs_from_correspondances` et ses noms de fichiers sont des SIREN nus face
-à des annotations préfixées. Le score peut être faux sans que l'extraction le soit.
+- **Sortir les cellules vides du dénominateur.** 34,2 % des cellules comptées dans
+  `numeric_recovery` sont des cellules vides de l'annotation, créditées quand la prédiction
+  est vide au même endroit. Les compter à part, et publier la version pondérée par cellule
+  à côté de la moyenne par fichier, qui surpondère les petits tableaux (0,90 sous 40
+  cellules, 0,53 au-delà de 270).
+- **Rendre visible l'absence d'une méthode déclarée.** `opendataloader` figure dans
+  `METHODS` mais ne produit aucun CSV : il disparaît du parquet sans avertissement. Soit
+  il sort du périmètre, soit l'évaluation lève un avertissement explicite. Sur ses 48
+  sorties HTML, 12 seulement contiennent une balise `<table>`.
+- **Vérifier l'appariement de `marker_last_work` avant de conclure à une régression.**
+  C'est la configuration la plus récente et la moins bonne (`total_extraction` à 0,043),
+  mais elle passe par `_list_pairs_from_correspondances` et ses noms de fichiers sont des
+  SIREN nus face à des annotations préfixées. Le score peut être faux sans que
+  l'extraction le soit.
 
 ## Ordre de travail
 
-1. **Corrections de mesure** ci-dessus — sinon rien de ce qui suit ne sera mesurable.
-2. **Levier 01** : le garde-fou sur la hauteur d'en-tête. Rapide, et il donne la vraie
-   base de comparaison.
-3. **Levier 02**, volet évaluation : appariement par contenu. Débloque la mesure des
+1. **Corrections de mesure** ci-dessus — sinon rien de ce qui suit n'est mesurable.
+2. **Levier 01** — le garde-fou sur la hauteur d'en-tête. Rapide, et il donne la vraie base
+   de comparaison.
+3. **Levier 02, volet évaluation** — appariement par contenu. Débloque la mesure des
    fichiers découpés.
-4. Faire porter l'information de fusion par le JSON de l'API chandra, plutôt que de la
-   déduire à la conversion : c'est la seule solution déterministe, celle dont marker
-   dispose déjà avec `colspan` et `rowspan`.
-5. **Leviers 04 et 05**, dans cet ordre. Le levier 03 n'est à retenir que comme indicateur
-   de suivi.
+4. **Faire porter l'information de fusion par le JSON de l'API chandra**, plutôt que de la
+   déduire à la conversion : seule solution déterministe, celle dont marker dispose déjà.
+5. **Leviers 04 puis 05.** Le levier 03 n'est à retenir que comme indicateur de suivi.
 
-Le levier 02, volet pipeline — la détection de frontière de tableau — est le plus lourd et
-n'a pas été chiffré ici. Son cas le plus fréquent, le tableau coupé par un saut de page, est
-traité à la conversion depuis la rédaction de cette page ; ce qui reste — deux tableaux
-voisins fusionnés en un — demande de reprendre la segmentation en amont. Ce reste devient
-prioritaire une fois les cinq premières étapes faites, si des SIREN à comptage divergent
-subsistent après reconversion du corpus.
+Le levier 02, volet pipeline, est le plus lourd. Son cas le plus fréquent — le tableau
+coupé par un saut de page — est traité des deux côtés. Ce qui reste, deux tableaux voisins
+fusionnés en un (trois SIREN par moteur), demande de reprendre la segmentation en amont :
+prioritaire une fois les cinq étapes ci-dessus faites.
