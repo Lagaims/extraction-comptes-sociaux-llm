@@ -41,10 +41,13 @@ Extraction des PDFs depuis S3 via les APIs d'extraction (api_marker ou api_opend
     uv run uvicorn main_chandra:app --host 0.0.0.0 --port 8003 --app-dir src
 
   Variables d'environnement pour api_chandra :
-    CHANDRA_BASE_URL   URL vllm  (défaut: https://projet-models-hf-vllm.user.lab.sspcloud.fr/v1)
-    CHANDRA_MODEL      Nom du modèle (défaut: chandra)
-    CHANDRA_API_KEY    Clé API (défaut: EMPTY)
+    CHANDRA_BASE_URL   URL vllm  (défaut: https://llm.lab.sspcloud.fr/api, sans /v1)
+    CHANDRA_MODEL      Nom du modèle (défaut: chandra-ocr-2)
+    CHANDRA_API_KEY    Clé API (défaut: EMPTY ; sur llm.lab, passer REAL_LLM_API_KEY)
     CHANDRA_DPI        Résolution PDF→image (défaut: 200)
+
+  Voir le docstring de api/api_chandra/src/main_chandra.py pour ce que le déploiement du
+  modèle doit fournir de son côté (chat_template.jinja, défauts d'échantillonnage).
 
 ═══════════════════════════════════════════════════════════════
  USAGE DU SCRIPT

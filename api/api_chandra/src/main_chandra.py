@@ -24,12 +24,14 @@ Lancement :
     uv run uvicorn main_chandra:app --host 0.0.0.0 --port 8003 --app-dir src
 
 Variables d'environnement :
-    CHANDRA_BASE_URL    URL du serveur vllm  (défaut: https://projet-models-hf-vllm.user.lab.sspcloud.fr/v1)
-    CHANDRA_MODEL       Nom du modèle        (défaut: datalab-to/chandra-ocr-2)
-    CHANDRA_API_KEY     Clé API              (défaut: EMPTY, convention vllm)
+    CHANDRA_BASE_URL    URL du serveur vllm  (défaut: https://llm.lab.sspcloud.fr/api)
+    CHANDRA_MODEL       Nom du modèle        (défaut: chandra-ocr-2)
+    CHANDRA_API_KEY     Clé API              (défaut: EMPTY, convention vllm ; sur llm.lab,
+                        passer REAL_LLM_API_KEY — l'endpoint est authentifié)
     CHANDRA_DPI         Résolution PDF→image (défaut: 200)
     CHANDRA_RETRIES     Tentatives par page  (défaut: 3)
     CHANDRA_RETRY_DELAY Délai initial (s)    (défaut: 2, multiplié par le numéro de tentative)
+
 """
 
 import asyncio
@@ -46,8 +48,8 @@ from openai import AsyncOpenAI
 
 load_dotenv()
 
-os.environ.setdefault("CHANDRA_BASE_URL", "https://projet-models-hf-vllm.user.lab.sspcloud.fr/v1")
-os.environ.setdefault("CHANDRA_MODEL", "datalab-to/chandra-ocr-2")
+os.environ.setdefault("CHANDRA_BASE_URL", "https://llm.lab.sspcloud.fr/api")
+os.environ.setdefault("CHANDRA_MODEL", "chandra-ocr-2")
 os.environ.setdefault("CHANDRA_API_KEY", "EMPTY")
 os.environ.setdefault("CHANDRA_DPI", "200")
 os.environ.setdefault("CHANDRA_RETRIES", "5")
@@ -111,6 +113,8 @@ async def _extract_html_from_image(client: AsyncOpenAI, b64_image: str, model: s
                         ],
                     }
                 ],
+                temperature=0,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             return response.choices[0].message.content or ""
         except Exception as e:
