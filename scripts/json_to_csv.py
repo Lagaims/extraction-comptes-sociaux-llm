@@ -377,7 +377,7 @@ class MarkerTableExtractor(TableExtractor):
     def extract(self, data: dict) -> list[Table]:
         pages = [
             [table for block in blocks for table in self._block_tables(block)]
-            for blocks in self._table_blocks_by_page(data)
+            for blocks in self.table_blocks_by_page(data)
         ]
         tables, self.merges = _merge_page_continuations(pages)
         return tables
@@ -399,7 +399,7 @@ class MarkerTableExtractor(TableExtractor):
             html = f"<table><tbody><tr>{html}</tr></tbody></table>"
         return _parse_html_tables(html)
 
-    def _table_blocks_by_page(self, node) -> list[list[dict]]:
+    def table_blocks_by_page(self, node) -> list[list[dict]]:
         """Regroupe les blocs de tableau par page, dans l'ordre de lecture.
 
         Le regroupement par page sert au recollage des tableaux coupés par un saut de
@@ -469,21 +469,31 @@ def _normalize_chandra_table(table: Table) -> Table | None:
 
 class ChandraTableExtractor(TableExtractor):
     """
-    Extrait les tableaux depuis la sortie JSON de l'API Chandra.
+    Extrait les tableaux depuis la sortie JSON de l'API Chandra, dans ses deux formats.
 
-    Format attendu :
+    Format courant — le HTML brut du VLM, page par page :
+    {
+      "metadata": {"model": ..., "dpi": ...},
+      "pages": [{"page": 1, "html": "<table><tr><td colspan='2'>…"}, ...]
+    }
+
+    Format historique — matrices de chaînes déjà aplaties par l'API :
     {
       "pages": [
         {"page": 1, "tables": [[["col1", "col2"], ["val1", "val2"]], ...]},
         ...
       ]
     }
+
+    Le premier porte les fusions (`colspan`, `rowspan`) et les `<br>` : il emprunte le
+    parseur de marker, donc le même traitement déterministe des fusions. Le second les a
+    déjà perdus — la conversion ne peut que replacer les sous-lignes d'en-tête au mieux
+    (`_align_header_subrows`). Les deux restent lus : les JSON déjà déposés sur S3 sont au
+    format historique.
     """
 
     def extract(self, data: dict) -> list[Table]:
-        pages = [
-            [table for table in page.get("tables", []) if table] for page in data.get("pages", [])
-        ]
+        pages = [self._page_tables(page) for page in data.get("pages", [])]
         # Le recollage précède la normalisation : la largeur canonique et le placement des
         # sous-lignes d'en-tête se lisent mieux sur le tableau entier que sur un fragment
         # de fin de page, qui n'a ni en-tête ni forcément toutes ses colonnes remplies.
@@ -494,6 +504,23 @@ class ChandraTableExtractor(TableExtractor):
             if normalized:
                 tables.append(normalized)
         return tables
+
+    @staticmethod
+    def _page_tables(page: dict) -> list[Table]:
+        """Grilles d'une page, quel que soit le format de la sortie chandra.
+
+        Args:
+            page: entrée de `pages`, portant soit `html`, soit `tables`.
+
+        Returns:
+            Les grilles de la page. Celles issues du HTML sortent déjà normalisées du
+            parseur ; `_normalize_grid` étant idempotent, la suite du traitement est la
+            même dans les deux cas.
+        """
+        html = page.get("html")
+        if html:
+            return _parse_html_tables(html)
+        return [table for table in page.get("tables") or [] if table]
 
 
 class OpenDataLoaderTableExtractor(TableExtractor):

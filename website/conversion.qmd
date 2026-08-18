@@ -38,9 +38,9 @@ antérieur.
 | | marker | chandra |
 |---|---|---|
 | Entrée S3 | `reprise/output_marker/*.json` | `reprise/output_chandra/*.json` |
-| Structure du fichier | arbre de blocs (`Document` → `Page` → …) | plat : `pages[].tables[]` |
-| Contenu d'un tableau | HTML `<table>` | matrice de chaînes déjà découpée |
-| Information de fusion | `colspan`, `rowspan` | **aucune** |
+| Structure du fichier | arbre de blocs (`Document` → `Page` → …) | plat : `pages[]` |
+| Contenu d'un tableau | HTML `<table>` | HTML `<table>` depuis la reprise de l'API ; matrice de chaînes déjà découpée dans les fichiers du corpus |
+| Information de fusion | `colspan`, `rowspan` | `colspan`, `rowspan` depuis la reprise de l'API ; **aucune** dans les fichiers du corpus |
 | Travail de la conversion | analyser le HTML, développer les fusions | replacer les sous-lignes d'en-tête |
 | Travail commun aux deux | recoller les tableaux coupés par un saut de page, rectangulariser | idem |
 | Tableaux produits (48 PDF) | 78 | 88 |
@@ -137,9 +137,26 @@ par un saut de page arrive donc en deux blocs : ils sont recollés quand la coup
 reconnaissable, selon la règle [décrite plus bas](#ce-que-les-deux-chemins-partagent),
 commune aux deux moteurs.
 
-Le point structurant est ce que le format **ne contient pas** : aucune information de
-fusion. Là où marker dit `rowspan="2"`, chandra livre des lignes plates. L'information
-n'a pas été perdue par la conversion, elle n'a jamais été transmise.
+Le point structurant est ce que ce format **ne contient pas** : aucune information de
+fusion. Là où marker dit `rowspan="2"`, chandra livre des lignes plates.
+
+::: {.callout-important appearance="simple"}
+## L'information n'avait pas été perdue, elle était jetée
+
+Le modèle ne produit pas ces matrices : il produit du HTML, et c'est l'API qui l'aplatissait
+avant écriture. Vérifié en soumettant une page du corpus au serveur vllm et en conservant la
+réponse : elle porte des `colspan`, une distinction `<thead>`/`<tbody>`, et un `data-bbox`
+par bloc. Rien de tout cela n'arrivait sur S3.
+
+L'API renvoie désormais ce HTML tel quel (`pages[].html`), et la conversion le lit avec le
+parseur de marker — mêmes fusions, mêmes règles. Les intertitres de section, que chandra
+déclare en `colspan="13"`, tombent alors d'eux-mêmes en première colonne, sans passer par
+la règle des lignes-labels.
+
+Les fichiers du corpus `reprise/` restent au format aplati : ils ont été produits avant ce
+correctif, et le rattraper suppose une nouvelle extraction. La conversion lit les deux
+formats. Tout ce qui suit décrit donc le traitement des fichiers existants.
+:::
 
 ### La normalisation
 

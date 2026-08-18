@@ -14,6 +14,7 @@ from json_to_csv import (
     _continuation_offset,
     _merge_page_continuations,
     _normalize_chandra_table,
+    _normalize_grid,
     _parse_html_tables,
     _rectangularize,
     _stale_csv_paths,
@@ -598,6 +599,115 @@ def test_merge_page_continuations_compte_les_recollages():
     assert len(tables) == 1
     assert len(tables[0]) == 4
     assert merges == 2
+
+
+# ── chandra : les deux formats de sortie de l'API ─────────────────────────────
+
+
+def test_chandra_html_conserve_les_fusions():
+    """Le format HTML porte les fusions : elles sont développées, pas devinées.
+
+    Le format historique, aplati par l'API, obligeait à replacer la sous-ligne au moyen
+    d'heuristiques ; ici `colspan` et `rowspan` donnent la réponse.
+    """
+    data = {
+        "metadata": {"model": "datalab-to/chandra-ocr-2", "dpi": 200},
+        "pages": [
+            {
+                "page": 1,
+                "html": (
+                    "<table><tbody>"
+                    "<tr><th rowspan='2'>SOCIETES</th><th rowspan='2'>Capital</th>"
+                    "<th colspan='2'>Valeur d'inventaire</th></tr>"
+                    "<tr><th>Brute</th><th>Nette</th></tr>"
+                    "<tr><td>Entité A</td><td>877 668</td><td>1 734 110</td><td>1 700 000</td></tr>"
+                    "</tbody></table>"
+                ),
+            }
+        ],
+    }
+    assert ChandraTableExtractor().extract(data) == [
+        [
+            ["SOCIETES", "Capital", "Valeur d'inventaire", ""],
+            ["", "", "Brute", "Nette"],
+            ["Entité A", "877 668", "1 734 110", "1 700 000"],
+        ]
+    ]
+
+
+def test_chandra_html_separe_les_lignes_dune_meme_cellule():
+    """`<br>` devient une espace au lieu de souder les mots.
+
+    C'est ce que l'aplatissement en amont détruisait : « Prêts etavancesconsentis ».
+    """
+    html = (
+        "<table><tbody>"
+        "<tr><th>SOCIETES</th><th>Prêts et<br/>avances<br/>consentis</th><th>Capital</th></tr>"
+        "<tr><td>Entité A</td><td>1 000</td><td>250</td></tr>"
+        "</tbody></table>"
+    )
+    grille = ChandraTableExtractor().extract({"pages": [{"page": 1, "html": html}]})
+    assert grille[0][0] == ["SOCIETES", "Prêts et avances consentis", "Capital"]
+
+
+def test_chandra_html_recolle_aussi_les_sauts_de_page():
+    """Le recollage ne dépend pas du format d'entrée."""
+    entete = "<tr><th>SOCIETES</th><th>Capital</th><th>Résultat</th></tr>"
+    data = {
+        "pages": [
+            {
+                "page": 1,
+                "html": f"<table><tbody>{entete}"
+                "<tr><td>Entité A</td><td>1 000</td><td>250</td></tr></tbody></table>",
+            },
+            {
+                "page": 2,
+                "html": "<table><tbody>"
+                "<tr><td>Entité B</td><td>2 000</td><td>500</td></tr></tbody></table>",
+            },
+        ]
+    }
+    extractor = ChandraTableExtractor()
+    assert extractor.extract(data) == [
+        [ENTETE, ["Entité A", "1 000", "250"], ["Entité B", "2 000", "500"]]
+    ]
+    assert extractor.merges == 1
+
+
+def test_chandra_les_deux_formats_donnent_la_meme_grille():
+    """Sur un tableau sans fusion, l'ancien et le nouveau format se rejoignent."""
+    plat = {"pages": [{"page": 1, "tables": [[ENTETE, ["Entité A", "1 000", "250"]]]}]}
+    html = {
+        "pages": [
+            {
+                "page": 1,
+                "html": (
+                    "<table><tbody>"
+                    "<tr><th>SOCIETES</th><th>Capital</th><th>Résultat</th></tr>"
+                    "<tr><td>Entité A</td><td>1 000</td><td>250</td></tr>"
+                    "</tbody></table>"
+                ),
+            }
+        ]
+    }
+    extractor = ChandraTableExtractor()
+    assert extractor.extract(html) == extractor.extract(plat)
+
+
+def test_normalize_grid_est_idempotent():
+    """Une grille déjà normalisée traverse la normalisation sans changer.
+
+    C'est ce qui permet aux grilles issues du parseur HTML — déjà normalisées — de suivre
+    ensuite le même chemin que les matrices à plat.
+    """
+    brut = [
+        ["SOCIETES", "Valeur d'inventaire", "Dividendes"],
+        ["Brute", "Nette"],
+        ["Entité A", "1", "2", "3"],
+        ["", "", "", "intertitre"],
+    ]
+    une_fois = _normalize_grid(brut)
+    assert _normalize_grid(une_fois) == une_fois
 
 
 # ── marker : un seul tableau par `TableGroup`, garanti par le code ────────────
