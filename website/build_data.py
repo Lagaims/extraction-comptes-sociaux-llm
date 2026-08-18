@@ -259,44 +259,61 @@ def build(limit: int | None = None) -> dict:
         + ", ".join(f"{m}: {len(p)}" for m, p in pred_paths.items())
     )
 
-    names = sorted(ann_paths)
+    # Les tableaux sont traités par SIREN et non fichier par fichier : le recollage des
+    # annotations coupées par un saut de page se décide au vu de tous les rangs à la fois,
+    # et méthode par méthode — un moteur peut avoir recollé le tableau, l'autre non.
+    by_base: dict[str, list[str]] = {}
+    for name in sorted(ann_paths, key=E._rank):
+        by_base.setdefault(E._base_stem(name), []).append(name)
+
+    bases = sorted(by_base)
     if limit:
-        names = names[:limit]
+        bases = bases[:limit]
 
     print("Comparaison…", flush=True)
     tables = []
-    for name in names:
-        # Le nom de fichier — `{siren}_{rang}` — sert d'identifiant : il permet de
-        # retrouver le PDF d'origine à partir d'un tableau affiché sur le site.
-        ann = load_xlsx(fs, ann_paths[name])
-        entry = {"id": name, "methods": {}}
+    for base in bases:
+        raw_anns = [load_xlsx(fs, ann_paths[n]) for n in by_base[base]]
+        segments = {}
         for method in METHODS:
-            path = pred_paths[method].get(name)
-            if path is None:
-                continue
-            result = compare_pair(ann, load_csv(fs, path))
-            if result is not None:
-                entry["methods"][method] = result
-        if entry["methods"]:
-            # L'annotation est identique d'une méthode à l'autre : on la sort du bloc
-            # par méthode pour ne pas la stocker deux fois.
-            first = next(iter(entry["methods"].values()))
-            entry["ann"] = first.pop("ann")
-            entry["annHeaderRows"] = first["annHeaderRows"]
-            entry["annHeaderCols"] = first["annHeaderCols"]
-            for result in entry["methods"].values():
-                result.pop("ann", None)
-            entry["annRows"] = len(entry["ann"])
-            entry["annCols"] = len(entry["ann"][0]) if entry["ann"] else 0
-            tables.append(entry)
-        print(
-            f"  {name:<20} "
-            + " ".join(
-                f"{m}={r['recoveryRate']:.0%}" if r.get("recoveryRate") is not None else f"{m}=n/a"
-                for m, r in entry["methods"].items()
-            ),
-            flush=True,
-        )
+            preds = sorted((s for s in pred_paths[method] if E._base_stem(s) == base), key=E._rank)
+            segments[method] = (E._merge_split_annotations(raw_anns, len(preds)), preds)
+
+        for i in range(max(len(anns) for anns, _ in segments.values())):
+            # `{siren}_{rang}` sert d'identifiant : il permet de retrouver le PDF
+            # d'origine à partir d'un tableau affiché sur le site.
+            entry = {"id": f"{base}_{i + 1}", "methods": {}}
+            for method, (anns, preds) in segments.items():
+                if i >= len(anns) or i >= len(preds):
+                    continue
+                result = compare_pair(anns[i], load_csv(fs, pred_paths[method][preds[i]]))
+                if result is not None:
+                    entry["methods"][method] = result
+            if entry["methods"]:
+                # L'annotation est le plus souvent identique d'une méthode à l'autre : on
+                # la sort du bloc par méthode pour ne pas la stocker deux fois. Elle ne
+                # diffère que si une méthode a recollé le tableau et l'autre non ; le bloc
+                # de la méthode garde alors la sienne.
+                first = next(iter(entry["methods"].values()))
+                entry["ann"] = first.pop("ann")
+                entry["annHeaderRows"] = first["annHeaderRows"]
+                entry["annHeaderCols"] = first["annHeaderCols"]
+                for result in entry["methods"].values():
+                    if result.get("ann") == entry["ann"]:
+                        result.pop("ann")
+                entry["annRows"] = len(entry["ann"])
+                entry["annCols"] = len(entry["ann"][0]) if entry["ann"] else 0
+                tables.append(entry)
+            print(
+                f"  {entry['id']:<20} "
+                + " ".join(
+                    f"{m}={r['recoveryRate']:.0%}"
+                    if r.get("recoveryRate") is not None
+                    else f"{m}=n/a"
+                    for m, r in entry["methods"].items()
+                ),
+                flush=True,
+            )
 
     payload = {
         "meta": {

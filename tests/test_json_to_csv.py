@@ -18,6 +18,7 @@ from json_to_csv import (
     _parse_html_tables,
     _rectangularize,
     _stale_csv_paths,
+    merge_continuations,
 )
 
 
@@ -599,6 +600,38 @@ def test_merge_page_continuations_compte_les_recollages():
     assert len(tables) == 1
     assert len(tables[0]) == 4
     assert merges == 2
+
+
+def test_merge_continuations_recolle_jusqua_la_cible():
+    """L'évaluation recolle les annotations jusqu'au compte de la prédiction.
+
+    Sans quoi l'annotation surnuméraire n'est appariée à rien et ses cellules sortent
+    du dénominateur : le score est alors calculé sur un corpus amputé, sans le dire.
+    """
+    debut = [ENTETE, ["Entité A", "1 000", "250"]]
+    suite = [["Entité B", "2 000", "500"]]
+    assert merge_continuations([debut, suite], 1) == [debut + suite]
+
+
+def test_merge_continuations_sarrete_a_la_cible():
+    """Deux recollages sont possibles, un seul est nécessaire : le second est laissé."""
+    debut = [ENTETE, ["Entité A", "1 000", "250"]]
+    suite = [["Entité B", "2 000", "500"]]
+    assert merge_continuations([debut, suite, suite], 2) == [debut + suite, suite]
+
+
+def test_merge_continuations_ne_fusionne_pas_deux_tableaux_distincts():
+    """La cible ne prime pas sur la règle : un tableau à en-tête propre reste entier."""
+    autre = [["Dénomination", "% Intérêt"], ["Entité B", "50"]]
+    tables = [[ENTETE, ["Entité A", "1 000", "250"]], autre]
+    assert merge_continuations(tables, 1) == tables
+
+
+def test_merge_continuations_sans_cible_a_atteindre():
+    """Prédiction et annotation déjà au même compte : rien n'est touché."""
+    debut = [ENTETE, ["Entité A", "1 000", "250"]]
+    suite = [["Entité B", "2 000", "500"]]
+    assert merge_continuations([debut, suite], 2) == [debut, suite]
 
 
 # ── chandra : les deux formats de sortie de l'API ─────────────────────────────

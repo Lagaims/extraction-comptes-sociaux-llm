@@ -356,6 +356,35 @@ def _merge_page_continuations(pages: list[list[Table]]) -> tuple[list[Table], in
     return tables, merges
 
 
+def merge_continuations(tables: list[Table], target: int) -> list[Table]:
+    """Recolle les tableaux consécutifs qui se prolongent, jusqu'à en obtenir `target`.
+
+    Même règle que le recollage des sauts de page, appliquée hors du contexte des pages :
+    l'évaluation en a besoin côté annotation. Quand la conversion a recollé un tableau
+    coupé par un saut de page, l'annotation, elle, reste découpée en deux fichiers ; les
+    rangs se désynchronisent et toute la suite du SIREN est comparée de travers, quand
+    elle n'est pas purement écartée de la mesure.
+
+    Args:
+        tables: tableaux d'un même SIREN, dans l'ordre des rangs.
+        target: nombre de tableaux visé, celui de l'autre côté de la comparaison.
+
+    Returns:
+        La liste après recollage. Elle peut rester plus longue que `target` : seules les
+        continuations reconnues sont recollées, jamais deux tableaux distincts.
+    """
+    merged = list(tables)
+    i = 0
+    while len(merged) > target and i < len(merged) - 1:
+        offset = _continuation_offset(merged[i], merged[i + 1])
+        if offset is None:
+            i += 1
+            continue
+        merged[i] = merged[i] + merged[i + 1][offset:]
+        del merged[i + 1]
+    return merged
+
+
 # ── Extracteurs ───────────────────────────────────────────────────────────────
 
 

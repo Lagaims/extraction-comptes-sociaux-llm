@@ -36,6 +36,10 @@ import numpy as np
 import pandas as pd
 from extraction_common.s3 import get_s3_fs
 
+# La règle de continuation est celle de la conversion : le recollage côté annotation doit
+# reconnaître exactement les mêmes coupures, sinon les deux côtés divergent.
+from json_to_csv import merge_continuations
+
 BUCKET = "projet-extraction-tableaux"
 S3_ANNOTATIONS = f"{BUCKET}/annotations/clean"
 S3_EVAL_OUTPUT = f"{BUCKET}/reprise/eval/evaluation.parquet"
@@ -110,29 +114,107 @@ def _load_xlsx(fs, path: str) -> pd.DataFrame:
     return df[~mask].reset_index(drop=True)
 
 
-def _list_pairs(fs, pred_prefix: str) -> list[tuple[str, str, str]]:
+_BASE_STEM_RE = re.compile(r"^(.*?)_(\d+)$")
+
+
+def _base_stem(name: str) -> str:
+    """Retire le suffixe _N d'un nom de fichier pour obtenir l'identifiant SIREN."""
+    m = _BASE_STEM_RE.match(name)
+    return m.group(1) if m else name
+
+
+def _grid(df: pd.DataFrame) -> list[list[str]]:
+    """Grille de chaînes d'un DataFrame, forme attendue par les helpers de `json_to_csv`."""
+    return [[str(v) for v in row] for row in df.values.tolist()]
+
+
+def _rank(stem: str) -> int:
+    """Rang `{siren}_{n}` d'un nom de fichier, 0 s'il n'en porte pas.
+
+    Le tri lexicographique placerait `_10` avant `_2` : à sept tableaux pour un même SIREN
+    le corpus n'y touche pas, mais l'appariement se fait par rang et ne doit pas en
+    dépendre.
     """
-    Apparie annotations (.xlsx) et prédictions (.csv) par stem de fichier.
-    Retourne une liste de (nom, annotation_path, prediction_path).
+    m = _BASE_STEM_RE.match(stem)
+    return int(m.group(2)) if m else 0
+
+
+def _merge_split_annotations(anns: list[pd.DataFrame], n_pred: int) -> list[pd.DataFrame]:
+    """Recolle les annotations d'un SIREN que la conversion a livrées en un seul tableau.
+
+    Un tableau à cheval sur deux pages est annoté en deux fichiers — `_1` et `_2` — alors
+    que la conversion, depuis le recollage des sauts de page, n'en produit qu'un. Sans
+    cette symétrie, l'annotation surnuméraire n'est appariée à rien : ses cellules
+    sortent silencieusement du dénominateur, et le score est calculé sur un corpus amputé.
+
+    Args:
+        anns: annotations du SIREN, dans l'ordre des rangs.
+        n_pred: nombre de tableaux prédits pour ce SIREN.
+
+    Returns:
+        Les annotations après recollage. Inchangées si la prédiction n'en compte pas
+        moins, ou si aucune continuation n'est reconnue — deux tableaux réellement
+        distincts, chacun avec son en-tête, ne sont jamais fusionnés.
+    """
+    if n_pred >= len(anns):
+        return anns
+    merged = merge_continuations([_grid(a) for a in anns], n_pred)
+    if len(merged) == len(anns):
+        return anns
+    return [pd.DataFrame(t, dtype=str).fillna("") for t in merged]
+
+
+def _list_pairs(fs, pred_prefix: str) -> tuple[list[tuple[str, pd.DataFrame, str]], Counter]:
+    """Apparie annotations (.xlsx) et prédictions (.csv), rang à rang au sein d'un SIREN.
+
+    Args:
+        fs: système de fichiers S3.
+        pred_prefix: dossier des CSV prédits.
+
+    Returns:
+        La liste des (nom de la prédiction, annotation chargée, chemin de la prédiction),
+        et le nombre de tableaux annotés par SIREN **après recollage** — c'est cette
+        segmentation-là, et non le nombre de fichiers annotés, qui fait référence pour
+        `table_count_accuracy`. L'annotation est un DataFrame et non un chemin : elle peut
+        être le recollage de plusieurs fichiers annotés (voir `_merge_split_annotations`).
     """
     ann = {Path(p).stem: p for p in fs.glob(f"{S3_ANNOTATIONS}/*.xlsx")}
     pred = {Path(p).stem: p for p in fs.glob(f"{pred_prefix}/*.csv")}
 
-    only_ann = sorted(set(ann) - set(pred))
-    only_pred = sorted(set(pred) - set(ann))
-    if only_ann:
-        print(f"    [WARN] {len(only_ann)} annotation(s) sans prédiction.")
+    by_base: dict[str, list[str]] = {}
+    for name in ann:
+        by_base.setdefault(_base_stem(name), []).append(name)
+
+    pairs: list[tuple[str, pd.DataFrame, str]] = []
+    ann_counts: Counter = Counter()
+    matched_preds: set[str] = set()
+    unpaired_ann = 0
+    for base, names in sorted(by_base.items()):
+        pred_stems = sorted((s for s in pred if _base_stem(s) == base), key=_rank)
+        anns = [_load_xlsx(fs, ann[n]) for n in sorted(names, key=_rank)]
+        anns = _merge_split_annotations(anns, len(pred_stems))
+        ann_counts[base] = len(anns)
+        for i, ann_df in enumerate(anns):
+            if i >= len(pred_stems):
+                unpaired_ann += 1
+                continue
+            pairs.append((pred_stems[i], ann_df, pred[pred_stems[i]]))
+            matched_preds.add(pred_stems[i])
+
+    only_pred = sorted(set(pred) - matched_preds)
+    if unpaired_ann:
+        print(f"    [WARN] {unpaired_ann} annotation(s) sans prédiction.")
     if only_pred:
         print(f"    [WARN] {len(only_pred)} prédiction(s) sans annotation.")
 
-    return [(name, ann[name], pred[name]) for name in sorted(set(ann) & set(pred))]
+    return pairs, ann_counts
 
 
-def _list_pairs_from_correspondances(fs, pred_prefix: str) -> list[tuple[str, str, str]]:
+def _list_pairs_from_correspondances(fs, pred_prefix: str) -> list[tuple[str, pd.DataFrame, str]]:
     """
     Apparie annotations et prédictions via le parquet de correspondances.
     La i-ème annotation (triée) d'un SIREN est appariée à la prédiction {siren}_{i}.csv.
-    Retourne une liste de (nom, annotation_path, prediction_path).
+    Retourne une liste de (nom, annotation chargée, prediction_path).
     """
     correspondances = _load_correspondances(fs)
     pred = {Path(p).stem: p for p in fs.glob(f"{pred_prefix}/*.csv")}
@@ -143,14 +225,15 @@ def _list_pairs_from_correspondances(fs, pred_prefix: str) -> list[tuple[str, st
         for rank, xlsx_path in enumerate(xlsx_paths, start=1):
             stem = f"{pure_siren}_{rank}"
             if stem in pred:
-                pairs.append((stem, xlsx_path, pred[stem]))
+                pairs.append((stem, _load_xlsx(fs, xlsx_path), pred[stem]))
                 matched_preds.add(stem)
 
     unmatched = sorted(set(pred) - matched_preds)
     if unmatched:
         print(f"    [WARN] {len(unmatched)} prédiction(s) sans annotation.")
 
-    return sorted(pairs)
+    # Tri sur le seul nom : les DataFrames du tuple ne sont pas comparables.
+    return sorted(pairs, key=lambda pair: pair[0])
 
 
 # ── Helpers cellules ──────────────────────────────────────────────────────────
@@ -505,14 +588,6 @@ def evaluate_pair(
 
 # ── Comptage de tableaux par SIREN ────────────────────────────────────────────
 
-_BASE_STEM_RE = re.compile(r"^(.*?)_(\d+)$")
-
-
-def _base_stem(name: str) -> str:
-    """Retire le suffixe _N d'un nom de fichier pour obtenir l'identifiant SIREN."""
-    m = _BASE_STEM_RE.match(name)
-    return m.group(1) if m else name
-
 
 def _count_per_base(fs, prefix: str, ext: str) -> Counter:
     """Compte le nombre de fichiers par SIREN (base_stem) dans un dossier S3."""
@@ -527,24 +602,20 @@ def evaluate_dataset(threshold: float = 0.5, cell_delta: int = 0) -> pd.DataFram
     fs = get_s3_fs()
     all_results: list[dict] = []
 
-    ann_counts_default = _count_per_base(fs, S3_ANNOTATIONS, ".xlsx")
-
     for method, pred_prefix in METHODS.items():
         if method == "marker_last_work":
             pairs = _list_pairs_from_correspondances(fs, pred_prefix)
             correspondances = _load_correspondances(fs)
             ann_counts = Counter({siren: len(paths) for siren, paths in correspondances.items()})
         else:
-            pairs = _list_pairs(fs, pred_prefix)
-            ann_counts = ann_counts_default
+            pairs, ann_counts = _list_pairs(fs, pred_prefix)
         print(f"\n[{method}] {len(pairs)} paire(s) trouvée(s)")
 
         pred_counts = _count_per_base(fs, pred_prefix, ".csv")
 
-        for name, ann_path, pred_path in pairs:
+        for name, ann_df, pred_path in pairs:
             base = _base_stem(name)
             try:
-                ann_df = _load_xlsx(fs, ann_path)
                 pred_df = _load_csv(fs, pred_path)
                 metrics = evaluate_pair(ann_df, pred_df, threshold=threshold, cell_delta=cell_delta)
                 metrics.update({"fichier": name, "methode": method})
