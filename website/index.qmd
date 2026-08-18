@@ -4,9 +4,8 @@ subtitle: "Diagnostic de l'extraction des tableaux de comptes sociaux"
 toc: false
 ---
 
-Neuf valeurs sur dix sont bien lues par l'OCR. Un peu plus d'une sur deux arrive dans la
-bonne cellule. L'écart n'est pas un problème de lecture mais d'alignement : il se joue
-dans la structure du tableau, pas dans les caractères.
+Neuf valeurs sur dix sont bien lues. Un peu plus d'une sur deux arrive dans la bonne
+cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de la grille.
 
 ```{=html}
 <div class="dx-tiles">
@@ -16,8 +15,8 @@ dans la structure du tableau, pas dans les caractères.
       l'extraction (marker&nbsp;; 94&nbsp;% pour chandra)</span>
   </div>
   <div class="dx-tile">
-    <span class="dx-tile-val">52&nbsp;%</span>
-    <span class="dx-tile-lab">arrivent dans la bonne cellule (marker&nbsp;; 55&nbsp;%
+    <span class="dx-tile-val">53&nbsp;%</span>
+    <span class="dx-tile-lab">arrivent dans la bonne cellule (marker&nbsp;; 56&nbsp;%
       pour chandra)</span>
   </div>
   <div class="dx-tile">
@@ -28,76 +27,56 @@ dans la structure du tableau, pas dans les caractères.
   <div class="dx-tile">
     <span class="dx-tile-val">1&nbsp;%</span>
     <span class="dx-tile-lab">des cellules portent une vraie erreur de lecture de
-      chiffres (42 sur 5&nbsp;395 chez marker, 75 sur 5&nbsp;414 chez chandra)</span>
+      chiffres (46 sur 5&nbsp;488 chez marker, 78 sur 5&nbsp;414 chez chandra)</span>
   </div>
 </div>
 ```
 
-## Ce que dit le diagnostic
+## Les cinq conclusions
 
-Le pipeline `PDF → JSON → CSV → métriques` a été mesuré sur les 74 tableaux annotés
-à la main du corpus `reprise/`, en suivant **chaque valeur numérique attendue** pour
-savoir où elle finit. Trois conclusions.
-
-**Le goulot n'est pas la reconnaissance de caractères.** Les erreurs de lecture de
-chiffres représentent 0,8 % des cellules pour marker et 1,4 % pour chandra. En revanche,
-un tiers des cellules sont perdues parce que la ligne ou la colonne n'a pas pu être
-appariée à celle de l'annotation.
-
-**La cause racine est la hauteur d'en-tête.** Un seul booléen — la hauteur détectée
-concorde-t-elle entre annotation et prédiction — sépare un bon fichier d'un mauvais : la
-récupération vaut **62,1 % quand elle concorde et 41,3 % sinon** chez marker, 73,0 %
-contre 39,3 % chez chandra. Elle discorde sur 32 fichiers marker sur 69 et 21 chandra
-sur 70.
-
-**Ce qui reste n'est pas là où on l'attend.** Pour 38 fichiers marker sur 66 et 44 chandra
-sur 68, un simple décalage global suffit à réaligner 90 % du tableau, et ce décalage
-correspond terme à terme à l'erreur de détection de la hauteur d'en-tête. Mais une partie
-des fichiers concernés a une source parfaitement régulière : là, le moteur a produit une
-autre structure d'en-tête, et aucune correction de la conversion n'y changera rien.
-
-**Une partie de l'écart mesuré n'est pas imputable aux moteurs.** Un tiers des
-« cellules numériques » comptées dans `numeric_recovery` sont des cellules vides de
-l'annotation, et l'appariement des tableaux par rang de fichier compare parfois des
-tableaux différents. Ces deux points se corrigent dans l'évaluation, pas dans le
-moteur.
+- **Le goulot n'est pas l'OCR.** Les erreurs de lecture de chiffres pèsent 0,8 % des
+  cellules chez marker, 1,4 % chez chandra. À l'inverse, un tiers des cellules sont
+  perdues faute de ligne ou de colonne appariée.
+- **La cause racine est la hauteur d'en-tête.** La récupération numérique vaut **64,0 %
+  quand la hauteur détectée concorde entre annotation et prédiction, 41,8 % sinon**
+  (marker) ; 73,2 % contre 42,2 % (chandra). Elle discorde sur 32 fichiers marker et 21
+  chandra, sur 69.
+- **Le décalage est le plus souvent global.** Pour 39 fichiers marker sur 66 et 47 chandra
+  sur 67, un simple décalage réaligne 90 % du tableau — et ce décalage vaut exactement
+  l'erreur de détection de la hauteur d'en-tête.
+- **Une partie de l'écart est hors d'atteinte de la conversion.** Parmi les fichiers
+  concernés, beaucoup ont une source parfaitement régulière : le moteur y a produit une
+  autre structure d'en-tête, en amont.
+- **Une partie de l'écart n'est pas imputable aux moteurs.** Un tiers des « cellules
+  numériques » de `numeric_recovery` sont des cellules vides, et l'appariement par rang
+  compare parfois deux tableaux différents. Premier volet déjà corrigé : un tableau coupé
+  par un saut de page est recollé des deux côtés, ce qui remet 93 cellules marker dans la
+  mesure — dont 62 correctement extraites, jamais comptées.
 
 ## Les quatre pages
 
-[**Du JSON au CSV**](conversion.qmd) — l'étape de conversion qui fige la structure du
-tableau avant toute mesure : le format de sortie de chaque moteur, le chemin de code qui
-lui est propre, et les règles que les deux partagent.
+- [**Du JSON au CSV**](conversion.qmd) — l'étape de conversion qui fige la structure du
+  tableau avant toute mesure.
+- [**Chiffres et cas**](chiffres.qmd) — l'ensemble des mesures : attrition, catégories
+  d'erreur, effet de la taille, cas pathologiques, limites.
+- [**Améliorations**](ameliorations.qmd) — cinq leviers classés par gain mesuré.
+- [**Comparaison des tableaux**](comparaison.qmd) — grille annotée face à grille extraite,
+  cellule par cellule.
 
-[**Chiffres et cas**](chiffres.qmd) — l'ensemble des mesures : entonnoir d'attrition,
-décomposition des cellules attendues en douze catégories d'erreur, effet de la taille du
-tableau, cas pathologiques fichier par fichier, et ce que les métriques publiées ne disent
-pas.
+## Périmètre
 
-[**Améliorations**](ameliorations.qmd) — cinq leviers classés par nombre de cellules
-récupérables, chacun avec son gain mesuré et le code concerné.
-
-[**Comparaison des tableaux**](comparaison.qmd) — pour chacun des 72 tableaux, la
-grille annotée à la main face à la grille extraite par chaque moteur, cellule par
-cellule, avec le statut de chaque valeur et le lien visuel entre cellule attendue et
-cellule appariée.
-
-## Périmètre et méthode
-
-Le corpus est `s3://projet-extraction-tableaux/reprise/` : 48 PDF de comptes sociaux
-scannés, 74 tableaux annotés à la main, trois moteurs d'extraction. 139 paires
-annotation/prédiction ont été évaluées (marker 69, chandra 70).
-
-Les fonctions d'évaluation du dépôt — `detect_column_header_height`,
-`_match_headers`, `_normalize_numeric_str` — ont été réutilisées telles quelles, pour
-que le diagnostic décrive le pipeline en place et non une réimplémentation qui
-divergerait silencieusement.
+- Corpus `s3://projet-extraction-tableaux/reprise/` : **48 PDF** scannés, **74 tableaux**
+  annotés à la main.
+- **138 paires** annotation/prédiction évaluées : marker 69, chandra 69.
+- Les fonctions d'évaluation du dépôt — `detect_column_header_height`, `_match_headers`,
+  `_normalize_numeric_str` — sont réutilisées telles quelles : le diagnostic décrit le
+  pipeline en place, pas une réimplémentation.
 
 ::: {.callout-note appearance="simple"}
 ## Données affichées
 
-Les tableaux sont affichés tels quels — raisons sociales, SIREN et montants sont ceux
-réellement lus par le pipeline, sans transformation : c'est ce que le diagnostic doit
-montrer. Le corpus provient de comptes sociaux déposés, publiés en open data par
-l'INPI ; chaque tableau est désigné par son nom de fichier d'origine, qui porte le
-SIREN du déposant.
+Raisons sociales, SIREN et montants sont affichés tels que lus par le pipeline, sans
+transformation : c'est l'objet du diagnostic. Le corpus provient de comptes sociaux
+déposés, publiés en open data par l'INPI ; chaque tableau porte son nom de fichier
+d'origine, qui contient le SIREN du déposant.
 :::

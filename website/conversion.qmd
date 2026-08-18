@@ -3,45 +3,40 @@ title: "Du JSON au CSV"
 subtitle: "Comment la sortie d'un moteur devient le tableau qui sera comparé"
 ---
 
-Entre le moteur d'extraction et la mesure, il y a une étape sans OCR ni LLM :
 `scripts/json_to_csv.py` transforme la sortie brute de chaque moteur en un CSV par
-tableau, déposé sur S3. C'est ce CSV, et lui seul, que l'évaluation confronte au XLSX
-annoté à la main.
+tableau. C'est ce CSV, et lui seul, que l'évaluation confronte au XLSX annoté à la main.
 
-L'étape est donc décisive alors même qu'elle ne lit aucun pixel : **tout ce que le
-moteur savait de la mise en page doit y être traduit en une grille de lignes et de
-colonnes, ou être perdu.** Chaque moteur ayant son propre format de sortie, il a son
-propre chemin de code — et c'est là que les deux se distinguent le plus.
+L'étape ne lit aucun pixel, mais elle est décisive : **tout ce que le moteur savait de la
+mise en page doit y devenir une grille de lignes et de colonnes, ou être perdu.**
 
-## Ce que l'étape fait, et ce qu'elle ne fait pas
+## Ce que l'étape fait, et ne fait pas
 
-La conversion est **purement structurelle**. Elle décide de la découpe en lignes et en
-colonnes, et rien d'autre : aucune détection d'en-tête, aucune normalisation de nombre,
-aucun nettoyage de libellé au-delà des espaces. Ces traitements existent, mais plus
-loin, dans `evaluation_extraction.py`, au moment de comparer.
+- **Elle décide de la découpe** en lignes et en colonnes — et rien d'autre.
+- **Elle ne détecte aucun en-tête, ne normalise aucun nombre, ne nettoie aucun libellé**
+  au-delà des espaces. Ces traitements sont en aval, dans `evaluation_extraction.py`.
+- **Conséquence :** une valeur mal *placée* ici est définitivement perdue ; une valeur mal
+  *formatée* sera rattrapée plus loin.
 
-Conséquence pratique : une valeur mal placée à cette étape ne peut plus être rattrapée
-en aval, tandis qu'une valeur mal formatée, elle, le sera.
+Chaque moteur a son format de sortie, donc son propre chemin de code.
 
 ::: {.dx-scroll}
 
 | | marker | chandra |
 |---|---|---|
 | Entrée S3 | `reprise/output_marker/*.json` | `reprise/output_chandra/*.json` |
-| Structure du fichier | arbre de blocs (`Document` → `Page` → …) | plat : `pages[].tables[]` |
-| Contenu d'un tableau | HTML `<table>` | matrice de chaînes déjà découpée |
-| Information de fusion | `colspan`, `rowspan` | **aucune** |
+| Structure du fichier | arbre de blocs (`Document` → `Page` → …) | plat : `pages[]` |
+| Contenu d'un tableau | HTML `<table>` | HTML `<table>` depuis la reprise de l'API ; matrice de chaînes déjà découpée dans les fichiers du corpus |
+| Information de fusion | `colspan`, `rowspan` | `colspan`, `rowspan` depuis la reprise de l'API ; **aucune** dans les fichiers du corpus |
 | Travail de la conversion | analyser le HTML, développer les fusions | replacer les sous-lignes d'en-tête |
-| Tableaux produits (48 PDF) | 78 | 88 |
+| Travail commun aux deux | recoller les tableaux coupés par un saut de page, rectangulariser | idem |
+| Tableaux produits (48 PDF) | 78 | 87 |
 
 :::
 
 ## marker — du HTML imbriqué à la grille
 
-### Le format d'entrée
-
-Le JSON de marker est un arbre de blocs typés. Chaque bloc porte un `block_type`, un
-fragment `html` et ses `children` :
+Le JSON de marker est un arbre de blocs typés, chacun portant un `block_type`, un fragment
+`html` et ses `children` :
 
 ``` json
 {
@@ -60,50 +55,38 @@ fragment `html` et ses `children` :
   ] }
 ```
 
-`MarkerTableExtractor` parcourt cet arbre récursivement et retient les blocs de type
-`Table` **et** `TableGroup`. Sur les 48 documents du corpus : 82 blocs `Table` et 18
-blocs `TableGroup`.
+### La collecte des blocs
 
-Retenir les deux types pourrait produire des doublons — un `TableGroup` contient ses
-`Table`. Ce n'est pas le cas ici : le `html` d'un `TableGroup` ne contient que des
-pointeurs `<content-ref>`, jamais de balise `<table>`. Le repli qui enveloppe un
-fragment sans `<table>` dans une ligne artificielle ne produit alors aucune cellule, donc
-aucun tableau. Sur le corpus, **aucun des 18 `TableGroup` ne porte de `<table>`** : la
-collecte est de fait sans doublon, mais elle le doit au format de sortie de marker, pas à
-une garantie du code.
-
-Quatre blocs `Table` ne produisent rien non plus : leur `html` vaut `<p></p>`. Le compte
-final tombe juste — 78 tableaux, 78 CSV sur S3.
+- `MarkerTableExtractor` parcourt l'arbre et retient les blocs `Table` **et** `TableGroup`
+  (82 et 18 sur le corpus).
+- Retenir les deux pourrait produire des doublons. La collecte s'en garantit elle-même :
+  **un `TableGroup` dont la descendance porte des `Table` est écarté au profit de
+  ceux-ci.** La déduplication ne dépend donc plus de la forme de la sortie du moteur.
+- Quatre blocs `Table` ne produisent rien (`html` vaut `<p></p>`). Le compte tombe juste :
+  78 tableaux, 78 CSV.
 
 ### Le parseur HTML
 
-`_TableHTMLParser` convertit le `<table>` en matrice. Quatre règles :
+`_TableHTMLParser` convertit le `<table>` en matrice, selon quatre règles :
 
-- **`colspan`** est développé en cellules à droite ; seule la première porte la valeur,
-  les suivantes sont vides.
-- **`rowspan`** est reporté sur les lignes suivantes via un compteur par colonne
-  (`_carried`) ; là encore, la valeur n'est écrite qu'à sa position d'origine. La
-  convention n'est pas cosmétique : répéter la valeur sur les lignes couvertes rend les
-  lignes indiscernables à l'appariement des en-têtes et divise la récupération numérique
-  par près de deux.
-- **`<br>` et retours à la ligne** deviennent des espaces, le texte est ensuite `strip`é.
-  Un en-tête sur deux lignes dans le PDF devient donc une seule chaîne.
-- **Les cellules d'un `rowspan` ouvert** sont pourvues avant la première cellule écrite de
-  la ligne, et la ligne est complétée jusqu'à la dernière position reportée. Sans quoi le
-  décalage se propagerait à tout le reste du tableau.
+- **`colspan`** est développé en cellules à droite ; seule la première porte la valeur.
+- **`rowspan`** est reporté sur les lignes suivantes via un compteur par colonne, la
+  valeur restant à sa position d'origine. Répéter la valeur rendrait les lignes
+  indiscernables à l'appariement et diviserait la récupération numérique par près de deux.
+- **`<br>` et retours à la ligne** deviennent des espaces : un en-tête sur deux lignes
+  devient une seule chaîne.
+- **Les positions d'un `rowspan` ouvert** sont pourvues avant la première cellule écrite
+  de la ligne, et la ligne est complétée jusqu'à la dernière position reportée — sans quoi
+  le décalage se propagerait à tout le tableau.
 
-Les fusions étant traitées ligne par ligne, une ligne dont le HTML compte moins de
-cellules que les autres ressort plus courte — c'est le cas de 18 des 78 tableaux marker.
-`_normalize_grid` achève la grille avant l'écriture du CSV : c'est la mise en forme
-commune aux deux moteurs, décrite plus bas. Marker déclarant ses fusions en `colspan`,
-ses lignes d'en-tête sont déjà à la bonne largeur ; sur ce chemin, seule la règle des
-lignes-labels joue, sur 3 tableaux.
+Grâce à cette dernière règle, **plus aucune des 78 grilles marker ne ressort à lignes
+inégales** (18 auparavant). Marker déclarant ses fusions en `colspan`, ses lignes
+d'en-tête sont déjà à la bonne largeur : seuls jouent ensuite la règle des lignes-labels
+et le recollage des sauts de page.
 
 ## chandra — la grille est déjà là
 
-### Le format d'entrée
-
-Chandra ne renvoie pas de HTML : ses tableaux sont déjà des listes de listes de chaînes,
+Chandra ne renvoie pas de HTML : ses tableaux sont des listes de listes de chaînes,
 groupées par page.
 
 ``` json
@@ -117,88 +100,125 @@ groupées par page.
   ] }
 ```
 
-`ChandraTableExtractor` parcourt les pages dans l'ordre et concatène leurs tableaux. Sur
-le corpus, 42 fichiers tiennent en une page, 5 en deux pages, 1 en trois — un tableau
-coupé par un saut de page ressort donc en deux tableaux distincts, donc en deux CSV.
+- `ChandraTableExtractor` parcourt les pages dans l'ordre et concatène leurs tableaux.
+- 42 fichiers tiennent en une page, 5 en deux, 1 en trois. Un tableau coupé par un saut de
+  page est recollé selon la règle [commune aux deux
+  moteurs](#ce-que-les-deux-chemins-partagent).
+- Le point structurant est ce que ce format **ne contient pas** : aucune information de
+  fusion. Là où marker dit `rowspan="2"`, chandra livre des lignes plates.
 
-Le point structurant est ce que le format **ne contient pas** : aucune information de
-fusion. Là où marker dit `rowspan="2"`, chandra livre des lignes plates. L'information
-n'a pas été perdue par la conversion, elle n'a jamais été transmise.
+::: {.callout-important appearance="simple"}
+## L'information n'avait pas été perdue, elle était jetée
 
-### La normalisation
+Le modèle produit bien du HTML — avec `colspan`, `<thead>`/`<tbody>` et un `data-bbox` par
+bloc, vérifié en soumettant une page au serveur vllm. C'est l'API qui l'aplatissait avant
+écriture.
 
-Les lignes n'ayant pas toutes la même longueur, `_normalize_grid` les uniformise — la même
-mise en forme que pour marker, à un préalable près : un tableau chandra sans aucune ligne
-de données est rejeté, ses pages produisant des blocs qui n'en sont pas (aucun sur le
-corpus). Trois règles, dans l'ordre :
+L'API renvoie désormais ce HTML tel quel (`pages[].html`), lu par le parseur de marker :
+mêmes fusions, mêmes règles. Les fichiers du corpus `reprise/` restent au format aplati —
+les rattraper suppose une nouvelle extraction. La conversion lit les deux formats ; tout
+ce qui suit décrit le traitement des fichiers existants.
+:::
 
-1. la **largeur canonique** est le maximum sur les lignes portant au moins deux cellules
-   non vides. Les lignes-labels — les intertitres de section, « A - FILIALES DÉTENUES
-   À 50 % » — en sont exclues : un moteur qui place l'intertitre en fin de ligne
-   imposerait sinon ses colonnes vides à tout le tableau ;
-2. une **sous-ligne d'en-tête** est replacée sous le libellé qu'elle détaille, quand sa
-   ligne parente permet de l'identifier ;
-3. le reste est complété **à droite**, faute de mieux.
+### La normalisation des lignes
 
-La règle 2 est celle qui demande le plus d'explication. `['Brute', 'Nette']` qualifie deux
-colonnes au milieu du tableau ; complétée à droite, la sous-ligne tomberait en colonnes
-0-1, sous « SOCIETES » et « Capital », faussant l'en-tête de toutes les colonnes suivantes.
-L'information perdue est pourtant déductible : quand une sous-ligne compte `k` cellules et
-que sa ligne parente est courte d'exactement `k - 1`, c'est qu'un libellé parent couvre `k`
-colonnes sans que ses cellules de continuation aient été émises.
+`_normalize_grid` uniformise les longueurs de ligne, en trois règles ordonnées :
 
-Reste à savoir lequel. Dans le tableau réglementaire des filiales et participations, le
-seul en-tête à sous-colonnes est le bloc « valeurs comptables » / « valeur d'inventaire »
-des titres détenus : le libellé couvrant est donc identifié sur ce vocabulaire, et
-**seulement s'il est unique** dans la ligne parente — sinon la règle 3 s'applique, faute de
-pouvoir trancher. La règle joue sur **23 des 88 tableaux chandra**.
+1. **Largeur canonique** = maximum sur les lignes portant au moins deux cellules non
+   vides. Les lignes-labels (intertitres du type « A - FILIALES DÉTENUES À 50 % ») en sont
+   exclues, sinon un intertitre placé en fin de ligne imposerait ses colonnes vides à tout
+   le tableau.
+2. **Sous-ligne d'en-tête** replacée sous le libellé qu'elle détaille, quand la ligne
+   parente permet de l'identifier.
+3. **Complétion à droite**, faute de mieux.
+
+Un préalable propre à chandra : un tableau sans aucune ligne de données est rejeté (aucun
+cas sur le corpus).
+
+#### La règle 2 en détail
+
+`['Brute', 'Nette']` qualifie deux colonnes au milieu du tableau ; complétée à droite,
+cette sous-ligne tomberait en colonnes 0-1 et fausserait tout l'en-tête. L'information est
+déductible : **une sous-ligne de `k` cellules dont la ligne parente est courte de `k - 1`
+signale un libellé parent couvrant `k` colonnes.** Reste à savoir lequel — trois signaux,
+dans cet ordre :
+
+- **Le vocabulaire réglementaire** — le seul en-tête à sous-colonnes est le bloc « valeurs
+  comptables » / « valeur d'inventaire ». Un libellé parent qui en relève, **et seulement
+  s'il est unique** dans sa ligne, est le libellé couvrant. Joue sur **25 des 88 grilles
+  brutes chandra**.
+- **L'unicité du candidat** — si la ligne parente n'offre qu'un seul libellé susceptible
+  de couvrir des sous-colonnes (non vide, non numérique, hors première colonne), il n'y a
+  rien à trancher. La première colonne est exclue : elle porte les raisons sociales.
+- **Le trou de continuation** — quand la ligne parente est déjà à la largeur du tableau et
+  porte exactement `k - 1` cellules vides après un libellé, ce trou désigne le libellé
+  couvrant. Deux trous candidats font renoncer.
+
+Si aucun ne tranche, la règle 3 reprend la main.
 
 ::: {.callout-note appearance="simple"}
 ## Portée de la règle 2
 
-Elle s'appuie sur le vocabulaire d'un tableau réglementaire précis. Sur un corpus d'une
-autre nature, elle ne se déclencherait pas et la complétion à droite reprendrait la main.
-La solution de fond est en amont, dans le format de sortie de l'API chandra, qui devrait
-transmettre ses fusions comme marker le fait en `colspan`.
+Le trou de continuation et l'unicité du candidat ne supposent aucun vocabulaire et valent
+donc sur un corpus d'une autre nature ; le vocabulaire réglementaire, lui, ne se
+déclencherait pas ailleurs. La solution de fond reste en amont : que l'API chandra
+transmette ses fusions en `colspan`, comme marker.
 :::
 
 ## Ce que les deux chemins partagent
 
-Passé l'extraction, marker et chandra suivent exactement le même code — et en héritent
-les mêmes propriétés.
+Passé l'extraction, marker et chandra suivent exactement le même code.
 
-**Un CSV par tableau, numéroté dans l'ordre de rencontre.** Le fichier `{stem}.json`
-produit `{stem}_1.csv`, `{stem}_2.csv`, … Le rang est le seul lien avec l'annotation :
-l'évaluation apparie `{stem}_1.xlsx` à `{stem}_1.csv`. Dès que le moteur découpe un
-tableau en deux, ou en fusionne deux, tout le reste du fichier est comparé de travers.
-Le corpus le montre : 74 annotations face à 78 CSV marker et 88 CSV chandra.
+**Un CSV par tableau, numéroté dans l'ordre de rencontre.** `{stem}.json` produit
+`{stem}_1.csv`, `{stem}_2.csv`… Le rang est le seul lien avec l'annotation. Dès que le
+moteur découpe ou fusionne un tableau, tout le reste du SIREN est comparé de travers — 74
+annotations face à 78 CSV marker et 87 CSV chandra.
 
-**Aucune interprétation du contenu.** Les cellules sont écrites telles qu'elles sortent de
-l'extracteur. Ni les nombres, ni les libellés, ni les cellules vides ne sont touchés.
+**Les tableaux coupés par un saut de page sont recollés.** Le premier tableau d'une page
+est recollé au dernier de la précédente si **trois conditions** sont réunies :
 
-**Une grille rectangulaire, décidée en amont.** `_normalize_grid` porte les lignes courtes
-à la largeur du tableau avant l'écriture, pour les deux moteurs. C'est le seul endroit où
-la question peut être tranchée : l'extracteur connaît encore le format d'origine, alors
-qu'un chargeur qui ne voit qu'un CSV n'a aucun moyen de savoir d'où viennent les cellules
-manquantes.
+- les deux blocs ont la même largeur canonique ;
+- le bloc précédent porte au moins une ligne de données ;
+- le bloc suivant **commence directement par des données** (donc sans en-tête, donc pas un
+  tableau autonome) ou **rappelle à l'identique l'en-tête** du précédent, écarté une fois.
 
-**Une sérialisation unique** : séparateur `;`, encodage `utf-8-sig`, échappement minimal
-(une cellule n'est entourée de guillemets que si elle contient elle-même un `;`, un
-guillemet ou un retour à la ligne). C'est la convention que relisent
-`evaluation_extraction.py` et le [visualiseur de comparaison](comparaison.qmd).
+Le recollage est restreint aux frontières de page : sur une même page, rien ne distingue
+une coupure d'une succession légitime. Il précède la normalisation, la largeur canonique
+se lisant mieux sur le tableau entier.
 
-**Une écriture qui ne réécrit jamais.** Un fichier dont le `_1.csv` existe déjà est
-ignoré. Pratique pour reprendre un traitement interrompu, piégeur dès que le code de
-conversion change : régénérer suppose de purger le dossier de sortie au préalable.
+**Le même recollage vaut côté annotation.** `merge_continuations` expose la règle hors du
+contexte des pages, et `_list_pairs` l'applique aux annotations d'un SIREN jusqu'à
+retomber sur le compte de la prédiction. Sans quoi l'annotation `_2` ne serait appariée à
+rien et ses cellules quitteraient la mesure.
 
-**Un fichier sans aucun tableau détecté est compté en erreur** et ne produit aucun CSV. Il
-disparaît alors silencieusement de l'évaluation, qui ne compare que les paires existantes.
+Reste ouvert : deux tableaux voisins qu'un moteur a **fusionnés** restent fusionnés, et
+l'appariement par rang reste à reprendre côté évaluation ([levier
+02](ameliorations.qmd)).
+
+Trois autres propriétés héritées :
+
+- **Aucune interprétation du contenu** : ni nombres, ni libellés, ni cellules vides ne
+  sont touchés.
+- **Une grille rectangulaire** décidée par `_normalize_grid` avant écriture : c'est le seul
+  endroit où l'on sait encore d'où viennent les cellules manquantes.
+- **Une sérialisation unique** : séparateur `;`, encodage `utf-8-sig`, guillemets
+  seulement si la cellule contient `;`, un guillemet ou un retour à la ligne. C'est la
+  convention que relisent `evaluation_extraction.py` et le
+  [visualiseur](comparaison.qmd).
+
+Deux points de vigilance à l'exécution :
+
+- **L'écriture ne réécrit pas par défaut** : un fichier dont le `_1.csv` existe est
+  ignoré — pratique pour reprendre un traitement, piégeur dès que le code change.
+  `--overwrite` régénère et **supprime les rangs surnuméraires** du passage précédent.
+- **Un fichier sans aucun tableau détecté ne produit aucun CSV** et disparaît de
+  l'évaluation. Le récapitulatif de fin liste ces fichiers, ceux tombés en erreur de
+  lecture et ceux ignorés faute d'`--overwrite`, décomptés séparément.
 
 ::: {.callout-note appearance="simple"}
 ## Deux autres sources dans le même script
 
-`json_to_csv.py` traite aussi `opendataloader` — sortie HTML de docling, qui réutilise le
-parseur de marker — et `marker_last_work`, même extracteur que marker sur un autre chemin
-S3 (`LLM_eval/`, préfixe `response_` retiré du nom de fichier). Ni l'un ni l'autre ne fait
-partie des moteurs mesurés sur ce site.
+`json_to_csv.py` traite aussi `opendataloader` (sortie HTML de docling, via le parseur de
+marker) et `marker_last_work` (même extracteur, autre chemin S3). Ni l'un ni l'autre ne
+fait partie des moteurs mesurés ici.
 :::

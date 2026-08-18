@@ -15,6 +15,7 @@ Usage :
     uv run json_to_csv.py --method marker_last_work
     uv run json_to_csv.py --method chandra
     uv run json_to_csv.py --method all          (défaut)
+    uv run json_to_csv.py --method marker --overwrite   (régénère au lieu d'ignorer)
 """
 
 import argparse
@@ -120,17 +121,71 @@ def _canonical_width(table: Table) -> int:
     return max((len(r) for r in body), default=max((len(r) for r in table), default=0))
 
 
+def _covering_label_index(parent: list[str]) -> int | None:
+    """Position, dans une ligne d'en-tête, du libellé qui couvre plusieurs colonnes.
+
+    Deux signaux, dans cet ordre. Le premier est lexical — le vocabulaire du tableau
+    réglementaire, seul en-tête à sous-colonnes de ce corpus. Le second ne suppose aucun
+    vocabulaire : quand la ligne parente n'offre qu'un seul libellé susceptible de
+    couvrir des sous-colonnes, il n'y a rien à trancher. La première colonne en est
+    exclue : elle porte les raisons sociales, et y placer les sous-libellés reviendrait à
+    qualifier la colonne des libellés de lignes.
+
+    Args:
+        parent: ligne d'en-tête, courte des cellules de continuation du libellé couvrant.
+
+    Returns:
+        L'indice du libellé couvrant, ou None si la ligne parente ne permet pas de
+        trancher — auquel cas le repli à droite s'applique.
+    """
+    lexical = [j for j, c in enumerate(parent) if _GROUP_HEADER_RE.search(_norm(c))]
+    if len(lexical) == 1:
+        return lexical[0]
+    candidates = [
+        j for j, c in enumerate(parent) if j > 0 and c.strip() and not _is_numeric_cell(c)
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _continuation_run_index(parent: list[str], k: int) -> int | None:
+    """Position du libellé suivi d'exactement `k - 1` cellules de continuation vides.
+
+    Cas du moteur qui a bien émis les cellules de continuation du libellé couvrant, mais
+    livre quand même la sous-ligne à plat. Le trou dans la ligne parente désigne alors la
+    position sans avoir à interpréter le moindre libellé.
+
+    Args:
+        parent: ligne d'en-tête, déjà à la largeur du tableau.
+        k: nombre de cellules de la sous-ligne à replacer.
+
+    Returns:
+        L'indice du libellé couvrant, ou None si aucun trou de la bonne longueur n'existe
+        ou si plusieurs sont candidats.
+    """
+    matches = [
+        j
+        for j in range(len(parent) - k + 1)
+        if parent[j].strip() and all(not c.strip() for c in parent[j + 1 : j + k])
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _align_header_subrows(table: Table, width: int) -> Table:
     """Replace une sous-ligne d'en-tête sous le libellé qu'elle détaille.
 
-    Une sous-ligne de `k` cellules dont la ligne parente est courte d'exactement `k - 1`
-    signale un libellé couvrant `k` colonnes dont les cellules de continuation n'ont pas
-    été émises. Complétée à droite, elle atterrit en colonnes 0..k-1 — donc sous les
-    mauvais en-têtes, ce qui fausse l'appariement de toutes les colonnes du tableau.
+    Deux configurations produisent une sous-ligne mal placée, selon que le moteur a émis
+    ou non les cellules de continuation du libellé couvrant :
 
-    Le libellé couvrant est identifié par `_GROUP_HEADER_RE`, et seulement s'il est
-    **unique** dans la ligne parente : à défaut le repli à droite s'applique, faute de
-    savoir laquelle des positions candidates est la bonne.
+    - **ligne parente courte de `k - 1`** : les continuations manquent, un libellé couvre
+      donc `k` colonnes. La ligne parente est écartée pour laisser la place, et la
+      sous-ligne posée sous le libellé identifié par `_covering_label_index` ;
+    - **ligne parente déjà à la largeur du tableau** : les continuations sont là, le trou
+      qu'elles forment désigne la position (`_continuation_run_index`).
+
+    Sans ce traitement, la sous-ligne est complétée à droite et atterrit en colonnes
+    0..k-1 — donc sous les mauvais en-têtes, ce qui fausse l'appariement de toutes les
+    colonnes du tableau. Quand la position ne peut pas être tranchée, le repli à droite
+    s'applique : mieux vaut le comportement connu qu'un placement arbitraire.
 
     Args:
         table: grille brute.
@@ -146,13 +201,17 @@ def _align_header_subrows(table: Table, width: int) -> Table:
         if not (2 <= k < width) or any(_is_numeric_cell(c) for c in row):
             continue
         parent = rows[i - 1]
-        if len(parent) != width - (k - 1):
+        if len(parent) == width - (k - 1):
+            j = _covering_label_index(parent)
+            if j is None:
+                continue
+            rows[i - 1] = parent[: j + 1] + [""] * (k - 1) + parent[j + 1 :]
+        elif len(parent) == width:
+            j = _continuation_run_index(parent, k)
+            if j is None:
+                continue
+        else:
             continue
-        matches = [j for j, c in enumerate(parent) if _GROUP_HEADER_RE.search(_norm(c))]
-        if len(matches) != 1:
-            continue
-        j = matches[0]
-        rows[i - 1] = parent[: j + 1] + [""] * (k - 1) + parent[j + 1 :]
         rows[i] = [""] * j + row + [""] * (width - j - k)
     return rows
 
@@ -209,10 +268,130 @@ def _rectangularize(table: Table) -> Table:
     return [row + [""] * (width - len(row)) for row in table]
 
 
+# ── Recollage des tableaux coupés par un saut de page ─────────────────────────
+
+
+def _rows_match(left: list[str], right: list[str]) -> bool:
+    """Deux lignes portent-elles le même texte, à la graphie près ?"""
+    return [_norm(c).strip() for c in left] == [_norm(c).strip() for c in right]
+
+
+def _continuation_offset(previous: Table, candidate: Table) -> int | None:
+    """Le candidat prolonge-t-il le tableau précédent, et à partir de quelle ligne ?
+
+    Un tableau à cheval sur deux pages est livré en deux blocs par les moteurs, donc en
+    deux CSV : les rangs se désynchronisent alors de ceux des annotations et toute la
+    suite du SIREN est comparée de travers. Deux signaux le trahissent, à largeur égale :
+    un bloc qui commence directement par des données n'a pas d'en-tête, donc n'est pas un
+    tableau autonome ; un bloc qui rappelle l'en-tête du précédent le répète en tête de
+    page. Un bloc portant un en-tête différent est un autre tableau.
+
+    Args:
+        previous: dernier tableau de la page précédente.
+        candidate: premier tableau de la page courante.
+
+    Returns:
+        Le nombre de lignes de tête du candidat à écarter avant de le recoller (0 s'il
+        reprend directement en données), ou None si les deux blocs sont bien deux
+        tableaux distincts.
+    """
+    if not previous or not candidate:
+        return None
+    if _canonical_width(previous) != _canonical_width(candidate):
+        return None
+    # Un bloc sans ligne de données n'est pas un tableau : rien de sûr à recoller.
+    if _first_data_row(previous) >= len(previous):
+        return None
+    header = _first_data_row(candidate)
+    if header == 0:
+        return 0
+    if header >= len(candidate):
+        return None
+    if header <= len(previous) and all(
+        _rows_match(previous[i], candidate[i]) for i in range(header)
+    ):
+        return header
+    return None
+
+
+def _merge_page_continuations(pages: list[list[Table]]) -> tuple[list[Table], int]:
+    """Recolle le premier tableau d'une page au dernier de la précédente, s'il le prolonge.
+
+    Le recollage est restreint aux frontières de page, seul endroit où la coupure est un
+    artefact connu de la segmentation. Deux tableaux voisins d'une même page sont laissés
+    tels quels : rien ne distingue alors une coupure d'une succession légitime.
+
+    Le recollage se contente de concaténer les lignes : la mise en forme reste à
+    `_normalize_grid`, qui verra le tableau entier. Rectangulariser ici serait au
+    contraire nuisible, une ligne-label plus longue que les données imposant alors ses
+    colonnes fantômes à la largeur canonique.
+
+    Args:
+        pages: tableaux de chaque page, dans l'ordre de lecture. Une page sans tableau
+            rompt la continuité.
+
+    Returns:
+        La liste des tableaux après recollage, et le nombre de recollages effectués.
+    """
+    tables: list[Table] = []
+    previous_page_last: int | None = None
+    merges = 0
+    for page in pages:
+        if not page:
+            previous_page_last = None
+            continue
+        first, *rest = page
+        offset = (
+            None
+            if previous_page_last is None
+            else _continuation_offset(tables[previous_page_last], first)
+        )
+        if offset is None:
+            tables.append(first)
+        else:
+            tables[previous_page_last] = tables[previous_page_last] + first[offset:]
+            merges += 1
+        tables.extend(rest)
+        previous_page_last = len(tables) - 1
+    return tables, merges
+
+
+def merge_continuations(tables: list[Table], target: int) -> list[Table]:
+    """Recolle les tableaux consécutifs qui se prolongent, jusqu'à en obtenir `target`.
+
+    Même règle que le recollage des sauts de page, appliquée hors du contexte des pages :
+    l'évaluation en a besoin côté annotation. Quand la conversion a recollé un tableau
+    coupé par un saut de page, l'annotation, elle, reste découpée en deux fichiers ; les
+    rangs se désynchronisent et toute la suite du SIREN est comparée de travers, quand
+    elle n'est pas purement écartée de la mesure.
+
+    Args:
+        tables: tableaux d'un même SIREN, dans l'ordre des rangs.
+        target: nombre de tableaux visé, celui de l'autre côté de la comparaison.
+
+    Returns:
+        La liste après recollage. Elle peut rester plus longue que `target` : seules les
+        continuations reconnues sont recollées, jamais deux tableaux distincts.
+    """
+    merged = list(tables)
+    i = 0
+    while len(merged) > target and i < len(merged) - 1:
+        offset = _continuation_offset(merged[i], merged[i + 1])
+        if offset is None:
+            i += 1
+            continue
+        merged[i] = merged[i] + merged[i + 1][offset:]
+        del merged[i + 1]
+    return merged
+
+
 # ── Extracteurs ───────────────────────────────────────────────────────────────
 
 
 class TableExtractor(ABC):
+    # Nombre de tableaux recollés lors du dernier `extract`, pour le journal du pipeline.
+    merges: int = 0
+
     @abstractmethod
     def extract(self, data: dict) -> list[Table]:
         """Extraire les tableaux d'un JSON ; retourne une liste de matrices de chaînes."""
@@ -221,29 +400,80 @@ class TableExtractor(ABC):
 class MarkerTableExtractor(TableExtractor):
     """
     Extrait les tableaux HTML imbriqués produits par l'API Marker.
-    Parcourt récursivement les blocs de type Table / TableGroup.
+    Parcourt récursivement les blocs de type Table / TableGroup, page par page.
     """
 
     def extract(self, data: dict) -> list[Table]:
-        tables: list[Table] = []
-        for block in self._find_table_blocks(data):
-            html = block.get("html", "")
-            if "<table" not in html.lower():
-                html = f"<table><tbody><tr>{html}</tr></tbody></table>"
-            tables.extend(_parse_html_tables(html))
+        pages = [
+            [table for block in blocks for table in self._block_tables(block)]
+            for blocks in self.table_blocks_by_page(data)
+        ]
+        tables, self.merges = _merge_page_continuations(pages)
         return tables
 
-    def _find_table_blocks(self, node) -> list[dict]:
-        results: list[dict] = []
-        if isinstance(node, list):
-            for item in node:
-                results.extend(self._find_table_blocks(item))
-        elif isinstance(node, dict):
-            if node.get("block_type") in ("Table", "TableGroup"):
-                results.append(node)
-            for child in node.get("children") or []:
-                results.extend(self._find_table_blocks(child))
-        return results
+    @staticmethod
+    def _block_tables(block: dict) -> list[Table]:
+        """Grilles portées par un bloc.
+
+        Args:
+            block: bloc `Table` ou `TableGroup`.
+
+        Returns:
+            Une grille par `<table>` du fragment HTML. Un fragment sans balise `<table>`
+            est enveloppé dans une ligne artificielle : s'il ne porte aucune cellule — le
+            cas des blocs vides et des `<content-ref>` — il ne produit aucune grille.
+        """
+        html = block.get("html", "")
+        if "<table" not in html.lower():
+            html = f"<table><tbody><tr>{html}</tr></tbody></table>"
+        return _parse_html_tables(html)
+
+    def table_blocks_by_page(self, node) -> list[list[dict]]:
+        """Regroupe les blocs de tableau par page, dans l'ordre de lecture.
+
+        Le regroupement par page sert au recollage des tableaux coupés par un saut de
+        page. Un `TableGroup` dont la descendance porte des blocs `Table` est écarté au
+        profit de ceux-ci : son `html` ne contient en principe que des pointeurs
+        `<content-ref>`, mais rien dans le format ne le garantit, et le retenir en plus de
+        ses enfants dupliquerait le tableau.
+
+        Args:
+            node: racine du JSON marker, ou tout sous-arbre.
+
+        Returns:
+            Une liste de blocs par bloc `Page` rencontré. Les blocs de tableau situés hors
+            de toute page forment un groupe final.
+        """
+        pages: list[list[dict]] = []
+        loose: list[dict] = []
+
+        def walk(current, sink: list[dict]) -> None:
+            if isinstance(current, list):
+                for item in current:
+                    walk(item, sink)
+                return
+            if not isinstance(current, dict):
+                return
+            block_type = current.get("block_type")
+            children = current.get("children") or []
+            if block_type == "Page":
+                page: list[dict] = []
+                pages.append(page)
+                walk(children, page)
+            elif block_type == "Table":
+                # Les enfants d'un `Table` sont ses cellules : rien à y chercher.
+                sink.append(current)
+            elif block_type == "TableGroup":
+                nested: list[dict] = []
+                walk(children, nested)
+                sink.extend(nested or [current])
+            else:
+                walk(children, sink)
+
+        walk(node, loose)
+        if loose:
+            pages.append(loose)
+        return pages
 
 
 def _normalize_chandra_table(table: Table) -> Table | None:
@@ -268,26 +498,58 @@ def _normalize_chandra_table(table: Table) -> Table | None:
 
 class ChandraTableExtractor(TableExtractor):
     """
-    Extrait les tableaux depuis la sortie JSON de l'API Chandra.
+    Extrait les tableaux depuis la sortie JSON de l'API Chandra, dans ses deux formats.
 
-    Format attendu :
+    Format courant — le HTML brut du VLM, page par page :
+    {
+      "metadata": {"model": ..., "dpi": ...},
+      "pages": [{"page": 1, "html": "<table><tr><td colspan='2'>…"}, ...]
+    }
+
+    Format historique — matrices de chaînes déjà aplaties par l'API :
     {
       "pages": [
         {"page": 1, "tables": [[["col1", "col2"], ["val1", "val2"]], ...]},
         ...
       ]
     }
+
+    Le premier porte les fusions (`colspan`, `rowspan`) et les `<br>` : il emprunte le
+    parseur de marker, donc le même traitement déterministe des fusions. Le second les a
+    déjà perdus — la conversion ne peut que replacer les sous-lignes d'en-tête au mieux
+    (`_align_header_subrows`). Les deux restent lus : les JSON déjà déposés sur S3 sont au
+    format historique.
     """
 
     def extract(self, data: dict) -> list[Table]:
+        pages = [self._page_tables(page) for page in data.get("pages", [])]
+        # Le recollage précède la normalisation : la largeur canonique et le placement des
+        # sous-lignes d'en-tête se lisent mieux sur le tableau entier que sur un fragment
+        # de fin de page, qui n'a ni en-tête ni forcément toutes ses colonnes remplies.
+        merged, self.merges = _merge_page_continuations(pages)
         tables = []
-        for page in data.get("pages", []):
-            for table in page.get("tables", []):
-                if table:
-                    normalized = _normalize_chandra_table(table)
-                    if normalized:
-                        tables.append(normalized)
+        for table in merged:
+            normalized = _normalize_chandra_table(table)
+            if normalized:
+                tables.append(normalized)
         return tables
+
+    @staticmethod
+    def _page_tables(page: dict) -> list[Table]:
+        """Grilles d'une page, quel que soit le format de la sortie chandra.
+
+        Args:
+            page: entrée de `pages`, portant soit `html`, soit `tables`.
+
+        Returns:
+            Les grilles de la page. Celles issues du HTML sortent déjà normalisées du
+            parseur ; `_normalize_grid` étant idempotent, la suite du traitement est la
+            même dans les deux cas.
+        """
+        html = page.get("html")
+        if html:
+            return _parse_html_tables(html)
+        return [table for table in page.get("tables") or [] if table]
 
 
 class OpenDataLoaderTableExtractor(TableExtractor):
@@ -465,7 +727,32 @@ def _load(fs: s3fs.S3FileSystem, path: str, ext: str):
             return f.read()
 
 
-def run_pipeline(method: str, fs: s3fs.S3FileSystem) -> None:
+def _stale_csv_paths(existing: list[str], siren: str, kept: int) -> list[str]:
+    """Chemins des CSV d'un passage antérieur devenus surnuméraires.
+
+    Une régénération produisant moins de tableaux qu'avant — c'est ce que fait le
+    recollage des sauts de page — laisserait sinon les rangs excédentaires en place, et le
+    dossier de sortie mélangerait deux générations de conversion.
+
+    Args:
+        existing: chemins présents dans le dossier de sortie.
+        siren: radical du fichier source.
+        kept: nombre de tableaux écrits par le passage courant.
+
+    Returns:
+        Les chemins `{siren}_{n}.csv` dont le rang dépasse `kept`. Les fichiers d'un autre
+        radical ne sont jamais retournés, y compris quand un radical en préfixe un autre.
+    """
+    pattern = re.compile(rf"^{re.escape(siren)}_(\d+)\.csv$")
+    stale = []
+    for path in existing:
+        match = pattern.match(Path(path).name)
+        if match and int(match.group(1)) > kept:
+            stale.append(path)
+    return stale
+
+
+def run_pipeline(method: str, fs: s3fs.S3FileSystem, overwrite: bool = False) -> None:
     cfg = SOURCES[method]
     ext = cfg["ext"]
     strip_prefix = cfg.get("strip_prefix", "")
@@ -480,11 +767,13 @@ def run_pipeline(method: str, fs: s3fs.S3FileSystem) -> None:
     input_files = sorted(fs.glob(f"{cfg['input']}/*{ext}"))
     print(f"[{method}] {len(input_files)} fichier(s) trouvé(s)\n")
 
-    ok = skipped = errors = 0
+    ok = skipped = 0
+    empty: list[str] = []
+    failed: list[str] = []
     for file_key in input_files:
         raw_stem = Path(file_key).stem
         siren = raw_stem.removeprefix(strip_prefix) if strip_prefix else raw_stem
-        if fs.exists(f"{cfg['output']}/{siren}_1.csv"):
+        if not overwrite and fs.exists(f"{cfg['output']}/{siren}_1.csv"):
             print(f"  [SKIP]  {siren}")
             skipped += 1
             continue
@@ -494,21 +783,39 @@ def run_pipeline(method: str, fs: s3fs.S3FileSystem) -> None:
             tables = extractor.extract(data)
         except Exception as e:
             print(f"  [ERR]   {siren}: {e}")
-            errors += 1
+            failed.append(siren)
             continue
 
         if not tables:
             print(f"  [VIDE]  {siren}: aucun tableau détecté")
-            errors += 1
+            empty.append(siren)
             continue
 
         for i, table in enumerate(tables, start=1):
             fs.pipe(f"{cfg['output']}/{siren}_{i}.csv", _to_csv_bytes(table))
+        if overwrite:
+            for path in _stale_csv_paths(
+                fs.glob(f"{cfg['output']}/{siren}_*.csv"), siren, len(tables)
+            ):
+                fs.rm(path)
 
-        print(f"  [OK]    {siren}: {len(tables)} tableau(x)")
+        merges = f", {extractor.merges} recollage(s) de saut de page" if extractor.merges else ""
+        print(f"  [OK]    {siren}: {len(tables)} tableau(x){merges}")
         ok += 1
 
-    print(f"\n[{method}] terminé — {ok} traité(s), {skipped} ignoré(s), {errors} sans tableau\n")
+    print(
+        f"\n[{method}] terminé — {ok} traité(s), {skipped} ignoré(s), "
+        f"{len(empty)} sans tableau, {len(failed)} en erreur"
+    )
+    # Un fichier sans tableau ne produit aucun CSV : il disparaît de l'évaluation, qui ne
+    # compare que les paires existantes. Le nommer est le seul moyen de le voir.
+    if empty:
+        print(f"  sans tableau, donc absents de l'évaluation : {', '.join(empty)}")
+    if failed:
+        print(f"  en erreur de lecture ou de conversion : {', '.join(failed)}")
+    if skipped:
+        print(f"  sortie déjà présente, non régénérée : {skipped} fichier(s) — voir --overwrite")
+    print()
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -522,12 +829,21 @@ def main() -> None:
         default="all",
         help="Source à convertir (défaut : all)",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Réécrire les sorties existantes et supprimer les rangs surnuméraires. "
+            "Nécessaire dès que le code de conversion change, sans quoi les fichiers déjà "
+            "convertis sont ignorés et le dossier mélange deux générations."
+        ),
+    )
     args = parser.parse_args()
 
     fs = get_s3_fs()
     methods = list(SOURCES) if args.method == "all" else [args.method]
     for method in methods:
-        run_pipeline(method, fs)
+        run_pipeline(method, fs, overwrite=args.overwrite)
 
 
 if __name__ == "__main__":

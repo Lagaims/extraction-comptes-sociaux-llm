@@ -452,10 +452,18 @@ th:not(:first-child) {
   margin: 1.2rem 0 0;
 }
 
-@media (min-width: 1100px) {
+@media (min-width: 1000px) {
   .dx-panes.dx-side-by-side {
     grid-template-columns: 1fr 1fr;
   }
+}
+
+// Le comparateur occupe toute la largeur utile de la page (`.column-screen-inset`
+// sur la page Comparaison) : les grilles y sont les seuls objets à ne pas tenir dans
+// la colonne de lecture. Quarto repeint le fond des tableaux de cette colonne, ce que
+// les grilles doivent conserver.
+.page-columns .column-screen-inset table.dx-grid {
+  background: var(--dx-surface);
 }
 
 .dx-pane {
@@ -490,13 +498,13 @@ th:not(:first-child) {
 
 .dx-grid-scroll {
   overflow: auto;
-  max-height: 68vh;
+  max-height: 78vh;
   border: 1px solid var(--dx-hairline);
 }
 
 table.dx-grid {
   border-collapse: collapse;
-  font-size: 0.73rem;
+  font-size: 0.78rem;
   margin: 0;
   background: var(--dx-surface);
   width: auto;
@@ -504,10 +512,10 @@ table.dx-grid {
   td,
   th {
     border: 1px solid var(--dx-hairline);
-    padding: 0.22rem 0.4rem;
+    padding: 0.26rem 0.45rem;
     vertical-align: top;
-    max-width: 15rem;
-    min-width: 2.6rem;
+    max-width: 18rem;
+    min-width: 2.8rem;
     white-space: pre-wrap;
     word-break: break-word;
     font-variant-numeric: tabular-nums;
@@ -546,6 +554,32 @@ table.dx-grid {
     background: var(--dx-surface-2);
     font-weight: 600;
     color: var(--dx-ink-2);
+  }
+
+  // Appariement des libellés : un en-tête de ligne ou de colonne est apparié ou non,
+  // et c'est ce booléen qui décide du sort des cellules de données qu'il commande.
+  // La teinte est donc portée par le libellé **et** par son index de gouttière, pour
+  // rester lisible quand la grille défile.
+  td.dx-hm-ok {
+    background: var(--dx-st-ok-bg);
+    color: var(--dx-st-ok-ink);
+  }
+
+  td.dx-hm-no {
+    background: var(--dx-st-manquante-bg);
+    color: var(--dx-st-manquante-ink);
+  }
+
+  th.dx-idx-ok {
+    background: var(--dx-st-ok-bg);
+    color: var(--dx-st-ok-ink);
+    font-weight: 700;
+  }
+
+  th.dx-idx-no {
+    background: var(--dx-st-manquante-bg);
+    color: var(--dx-st-manquante-ink);
+    font-weight: 700;
   }
 }
 
@@ -607,18 +641,30 @@ table.dx-grid col.dx-col-hl {
   line-height: 1.5;
 }
 
+// La légende tient sur deux lignes — une par objet légendé, statut d'une valeur puis
+// appariement d'un libellé. C'est le paragraphe qui porte la mise en ligne : le
+// balisage Quarto place les entrées dans un `<p>` par groupe.
 .dx-status-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 1rem;
   font-size: 0.77rem;
   color: var(--dx-ink-2);
   margin: 1.1rem 0 0;
 
-  > span {
+  p {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.38rem;
+    gap: 0.3rem 1rem;
+    margin: 0 0 0.4rem;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+
+    > span {
+      display: flex;
+      align-items: center;
+      gap: 0.38rem;
+    }
   }
 }
 
@@ -628,6 +674,15 @@ table.dx-grid col.dx-col-hl {
   border-radius: 2px;
   flex: none;
   border: 1px solid rgba(20, 26, 33, 0.14);
+}
+
+// La légende couvre deux objets distincts — le statut d'une valeur et l'appariement
+// d'un libellé : sans intertitre, les deux verts se lisent comme un seul.
+.dx-legend-head {
+  color: var(--dx-ink);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .dx-nodata {
