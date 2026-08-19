@@ -392,8 +392,9 @@ la source.
       var result = table.methods[method];
       if (!result) return;
 
-      // L'annotation n'est portée par la méthode que si elle diffère de celle du
-      // tableau — cas d'un moteur qui a recollé un saut de page et de l'autre non.
+      // L'annotation n'est portée par la méthode que si elle diffère de celle du tableau :
+      // marker voit le PDF entier et rend parfois d'un seul tenant un tableau coupé par un
+      // saut de page, sa référence est alors regroupée d'autant.
       var ann = result.ann || table.ann;
       var annCols = maxCols(ann);
 

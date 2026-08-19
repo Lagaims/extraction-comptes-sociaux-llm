@@ -268,130 +268,10 @@ def _rectangularize(table: Table) -> Table:
     return [row + [""] * (width - len(row)) for row in table]
 
 
-# ── Recollage des tableaux coupés par un saut de page ─────────────────────────
-
-
-def _rows_match(left: list[str], right: list[str]) -> bool:
-    """Deux lignes portent-elles le même texte, à la graphie près ?"""
-    return [_norm(c).strip() for c in left] == [_norm(c).strip() for c in right]
-
-
-def _continuation_offset(previous: Table, candidate: Table) -> int | None:
-    """Le candidat prolonge-t-il le tableau précédent, et à partir de quelle ligne ?
-
-    Un tableau à cheval sur deux pages est livré en deux blocs par les moteurs, donc en
-    deux CSV : les rangs se désynchronisent alors de ceux des annotations et toute la
-    suite du SIREN est comparée de travers. Deux signaux le trahissent, à largeur égale :
-    un bloc qui commence directement par des données n'a pas d'en-tête, donc n'est pas un
-    tableau autonome ; un bloc qui rappelle l'en-tête du précédent le répète en tête de
-    page. Un bloc portant un en-tête différent est un autre tableau.
-
-    Args:
-        previous: dernier tableau de la page précédente.
-        candidate: premier tableau de la page courante.
-
-    Returns:
-        Le nombre de lignes de tête du candidat à écarter avant de le recoller (0 s'il
-        reprend directement en données), ou None si les deux blocs sont bien deux
-        tableaux distincts.
-    """
-    if not previous or not candidate:
-        return None
-    if _canonical_width(previous) != _canonical_width(candidate):
-        return None
-    # Un bloc sans ligne de données n'est pas un tableau : rien de sûr à recoller.
-    if _first_data_row(previous) >= len(previous):
-        return None
-    header = _first_data_row(candidate)
-    if header == 0:
-        return 0
-    if header >= len(candidate):
-        return None
-    if header <= len(previous) and all(
-        _rows_match(previous[i], candidate[i]) for i in range(header)
-    ):
-        return header
-    return None
-
-
-def _merge_page_continuations(pages: list[list[Table]]) -> tuple[list[Table], int]:
-    """Recolle le premier tableau d'une page au dernier de la précédente, s'il le prolonge.
-
-    Le recollage est restreint aux frontières de page, seul endroit où la coupure est un
-    artefact connu de la segmentation. Deux tableaux voisins d'une même page sont laissés
-    tels quels : rien ne distingue alors une coupure d'une succession légitime.
-
-    Le recollage se contente de concaténer les lignes : la mise en forme reste à
-    `_normalize_grid`, qui verra le tableau entier. Rectangulariser ici serait au
-    contraire nuisible, une ligne-label plus longue que les données imposant alors ses
-    colonnes fantômes à la largeur canonique.
-
-    Args:
-        pages: tableaux de chaque page, dans l'ordre de lecture. Une page sans tableau
-            rompt la continuité.
-
-    Returns:
-        La liste des tableaux après recollage, et le nombre de recollages effectués.
-    """
-    tables: list[Table] = []
-    previous_page_last: int | None = None
-    merges = 0
-    for page in pages:
-        if not page:
-            previous_page_last = None
-            continue
-        first, *rest = page
-        offset = (
-            None
-            if previous_page_last is None
-            else _continuation_offset(tables[previous_page_last], first)
-        )
-        if offset is None:
-            tables.append(first)
-        else:
-            tables[previous_page_last] = tables[previous_page_last] + first[offset:]
-            merges += 1
-        tables.extend(rest)
-        previous_page_last = len(tables) - 1
-    return tables, merges
-
-
-def merge_continuations(tables: list[Table], target: int) -> list[Table]:
-    """Recolle les tableaux consécutifs qui se prolongent, jusqu'à en obtenir `target`.
-
-    Même règle que le recollage des sauts de page, appliquée hors du contexte des pages :
-    l'évaluation en a besoin côté annotation. Quand la conversion a recollé un tableau
-    coupé par un saut de page, l'annotation, elle, reste découpée en deux fichiers ; les
-    rangs se désynchronisent et toute la suite du SIREN est comparée de travers, quand
-    elle n'est pas purement écartée de la mesure.
-
-    Args:
-        tables: tableaux d'un même SIREN, dans l'ordre des rangs.
-        target: nombre de tableaux visé, celui de l'autre côté de la comparaison.
-
-    Returns:
-        La liste après recollage. Elle peut rester plus longue que `target` : seules les
-        continuations reconnues sont recollées, jamais deux tableaux distincts.
-    """
-    merged = list(tables)
-    i = 0
-    while len(merged) > target and i < len(merged) - 1:
-        offset = _continuation_offset(merged[i], merged[i + 1])
-        if offset is None:
-            i += 1
-            continue
-        merged[i] = merged[i] + merged[i + 1][offset:]
-        del merged[i + 1]
-    return merged
-
-
 # ── Extracteurs ───────────────────────────────────────────────────────────────
 
 
 class TableExtractor(ABC):
-    # Nombre de tableaux recollés lors du dernier `extract`, pour le journal du pipeline.
-    merges: int = 0
-
     @abstractmethod
     def extract(self, data: dict) -> list[Table]:
         """Extraire les tableaux d'un JSON ; retourne une liste de matrices de chaînes."""
@@ -400,16 +280,11 @@ class TableExtractor(ABC):
 class MarkerTableExtractor(TableExtractor):
     """
     Extrait les tableaux HTML imbriqués produits par l'API Marker.
-    Parcourt récursivement les blocs de type Table / TableGroup, page par page.
+    Parcourt récursivement les blocs de type Table / TableGroup.
     """
 
     def extract(self, data: dict) -> list[Table]:
-        pages = [
-            [table for block in blocks for table in self._block_tables(block)]
-            for blocks in self.table_blocks_by_page(data)
-        ]
-        tables, self.merges = _merge_page_continuations(pages)
-        return tables
+        return [table for block in self.table_blocks(data) for table in self._block_tables(block)]
 
     @staticmethod
     def _block_tables(block: dict) -> list[Table]:
@@ -428,24 +303,21 @@ class MarkerTableExtractor(TableExtractor):
             html = f"<table><tbody><tr>{html}</tr></tbody></table>"
         return _parse_html_tables(html)
 
-    def table_blocks_by_page(self, node) -> list[list[dict]]:
-        """Regroupe les blocs de tableau par page, dans l'ordre de lecture.
+    def table_blocks(self, node) -> list[dict]:
+        """Blocs de tableau du document, dans l'ordre de lecture.
 
-        Le regroupement par page sert au recollage des tableaux coupés par un saut de
-        page. Un `TableGroup` dont la descendance porte des blocs `Table` est écarté au
-        profit de ceux-ci : son `html` ne contient en principe que des pointeurs
-        `<content-ref>`, mais rien dans le format ne le garantit, et le retenir en plus de
-        ses enfants dupliquerait le tableau.
+        Un `TableGroup` dont la descendance porte des blocs `Table` est écarté au profit de
+        ceux-ci : son `html` ne contient en principe que des pointeurs `<content-ref>`,
+        mais rien dans le format ne le garantit, et le retenir en plus de ses enfants
+        dupliquerait le tableau.
 
         Args:
             node: racine du JSON marker, ou tout sous-arbre.
 
         Returns:
-            Une liste de blocs par bloc `Page` rencontré. Les blocs de tableau situés hors
-            de toute page forment un groupe final.
+            La liste des blocs `Table` retenus.
         """
-        pages: list[list[dict]] = []
-        loose: list[dict] = []
+        blocks: list[dict] = []
 
         def walk(current, sink: list[dict]) -> None:
             if isinstance(current, list):
@@ -456,11 +328,7 @@ class MarkerTableExtractor(TableExtractor):
                 return
             block_type = current.get("block_type")
             children = current.get("children") or []
-            if block_type == "Page":
-                page: list[dict] = []
-                pages.append(page)
-                walk(children, page)
-            elif block_type == "Table":
+            if block_type == "Table":
                 # Les enfants d'un `Table` sont ses cellules : rien à y chercher.
                 sink.append(current)
             elif block_type == "TableGroup":
@@ -470,10 +338,8 @@ class MarkerTableExtractor(TableExtractor):
             else:
                 walk(children, sink)
 
-        walk(node, loose)
-        if loose:
-            pages.append(loose)
-        return pages
+        walk(node, blocks)
+        return blocks
 
 
 def _normalize_chandra_table(table: Table) -> Table | None:
@@ -522,16 +388,12 @@ class ChandraTableExtractor(TableExtractor):
     """
 
     def extract(self, data: dict) -> list[Table]:
-        pages = [self._page_tables(page) for page in data.get("pages", [])]
-        # Le recollage précède la normalisation : la largeur canonique et le placement des
-        # sous-lignes d'en-tête se lisent mieux sur le tableau entier que sur un fragment
-        # de fin de page, qui n'a ni en-tête ni forcément toutes ses colonnes remplies.
-        merged, self.merges = _merge_page_continuations(pages)
         tables = []
-        for table in merged:
-            normalized = _normalize_chandra_table(table)
-            if normalized:
-                tables.append(normalized)
+        for page in data.get("pages", []):
+            for table in self._page_tables(page):
+                normalized = _normalize_chandra_table(table)
+                if normalized:
+                    tables.append(normalized)
         return tables
 
     @staticmethod
@@ -730,9 +592,9 @@ def _load(fs: s3fs.S3FileSystem, path: str, ext: str):
 def _stale_csv_paths(existing: list[str], siren: str, kept: int) -> list[str]:
     """Chemins des CSV d'un passage antérieur devenus surnuméraires.
 
-    Une régénération produisant moins de tableaux qu'avant — c'est ce que fait le
-    recollage des sauts de page — laisserait sinon les rangs excédentaires en place, et le
-    dossier de sortie mélangerait deux générations de conversion.
+    Une régénération produisant moins de tableaux qu'avant laisserait sinon les rangs
+    excédentaires en place, et le dossier de sortie mélangerait deux générations de
+    conversion.
 
     Args:
         existing: chemins présents dans le dossier de sortie.
@@ -799,8 +661,7 @@ def run_pipeline(method: str, fs: s3fs.S3FileSystem, overwrite: bool = False) ->
             ):
                 fs.rm(path)
 
-        merges = f", {extractor.merges} recollage(s) de saut de page" if extractor.merges else ""
-        print(f"  [OK]    {siren}: {len(tables)} tableau(x){merges}")
+        print(f"  [OK]    {siren}: {len(tables)} tableau(x)")
         ok += 1
 
     print(
