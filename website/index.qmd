@@ -12,22 +12,22 @@ cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de
   <div class="dx-tile">
     <span class="dx-tile-val" style="color:var(--dx-st-ok-ink)">91&nbsp;%</span>
     <span class="dx-tile-lab">des valeurs attendues sont présentes quelque part dans
-      l'extraction (marker&nbsp;; 94&nbsp;% pour chandra)</span>
+      l'extraction (marker&nbsp;; 97&nbsp;% pour chandra)</span>
   </div>
   <div class="dx-tile">
-    <span class="dx-tile-val">53&nbsp;%</span>
-    <span class="dx-tile-lab">arrivent dans la bonne cellule (marker&nbsp;; 56&nbsp;%
+    <span class="dx-tile-val">51&nbsp;%</span>
+    <span class="dx-tile-lab">arrivent dans la bonne cellule (marker&nbsp;; 67&nbsp;%
       pour chandra)</span>
   </div>
   <div class="dx-tile">
-    <span class="dx-tile-val" style="color:var(--dx-st-manquante-ink)">38&nbsp;pts</span>
-    <span class="dx-tile-lab">d'écart entre les deux : de la donnée correctement lue,
-      mais mal placée</span>
+    <span class="dx-tile-val" style="color:var(--dx-st-manquante-ink)">40&nbsp;pts</span>
+    <span class="dx-tile-lab">d'écart entre les deux chez marker, 30 chez chandra : de la
+      donnée correctement lue, mais mal placée</span>
   </div>
   <div class="dx-tile">
     <span class="dx-tile-val">1&nbsp;%</span>
     <span class="dx-tile-lab">des cellules portent une vraie erreur de lecture de
-      chiffres (46 sur 5&nbsp;488 chez marker, 78 sur 5&nbsp;414 chez chandra)</span>
+      chiffres (46 sur 5&nbsp;504 chez marker, 45 sur 5&nbsp;529 chez chandra)</span>
   </div>
 </div>
 ```
@@ -35,23 +35,23 @@ cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de
 ## Les cinq conclusions
 
 - **Le goulot n'est pas l'OCR.** Les erreurs de lecture de chiffres pèsent 0,8 % des
-  cellules chez marker, 1,4 % chez chandra. À l'inverse, un tiers des cellules sont
+  cellules chez marker comme chez chandra. À l'inverse, un tiers des cellules marker sont
   perdues faute de ligne ou de colonne appariée.
-- **La cause racine est la hauteur d'en-tête.** La récupération numérique vaut **64,0 %
-  quand la hauteur détectée concorde entre annotation et prédiction, 41,8 % sinon**
-  (marker) ; 73,2 % contre 42,2 % (chandra). Elle discorde sur 32 fichiers marker et 21
-  chandra, sur 69.
-- **Le décalage est le plus souvent global.** Pour 39 fichiers marker sur 66 et 47 chandra
-  sur 67, un simple décalage réaligne 90 % du tableau — et ce décalage vaut exactement
-  l'erreur de détection de la hauteur d'en-tête.
+- **La cause racine est la hauteur d'en-tête.** La récupération numérique vaut **64,1 %
+  quand la hauteur détectée concorde entre annotation et prédiction, 41,9 % sinon**
+  (marker) ; 91,6 % contre 42,9 % (chandra). Elle discorde sur 32 tableaux marker sur 69
+  et 22 chandra sur 73.
+- **Le décalage est le plus souvent global.** Un simple décalage réaligne 90 % du tableau
+  sur la majorité des fichiers concernés — et ce décalage vaut exactement l'erreur de
+  détection de la hauteur d'en-tête.
 - **Une partie de l'écart est hors d'atteinte de la conversion.** Parmi les fichiers
   concernés, beaucoup ont une source parfaitement régulière : le moteur y a produit une
   autre structure d'en-tête, en amont.
 - **Une partie de l'écart n'est pas imputable aux moteurs.** Un tiers des « cellules
-  numériques » de `numeric_recovery` sont des cellules vides, et l'appariement par rang
-  compare parfois deux tableaux différents. Premier volet déjà corrigé : un tableau coupé
-  par un saut de page est recollé des deux côtés, ce qui remet 93 cellules marker dans la
-  mesure — dont 62 correctement extraites, jamais comptées.
+  numériques » de `numeric_recovery` sont des cellules vides — 34,2 % chez marker, 34,1 %
+  chez chandra — et l'appariement par rang compare parfois deux tableaux différents : les
+  tableaux ne sont pas recollés, donc un moteur qui découpe autrement que l'annotation
+  décale toute la suite du SIREN.
 
 ## Les quatre pages
 
@@ -67,7 +67,7 @@ cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de
 
 - Corpus `s3://projet-extraction-tableaux/reprise/` : **48 PDF** scannés, **74 tableaux**
   annotés à la main.
-- **138 paires** annotation/prédiction évaluées : marker 69, chandra 69.
+- **142 paires** annotation/prédiction évaluées : marker 69, chandra 73.
 - Les fonctions d'évaluation du dépôt — `detect_column_header_height`, `_match_headers`,
   `_normalize_numeric_str` — sont réutilisées telles quelles : le diagnostic décrit le
   pipeline en place, pas une réimplémentation.
