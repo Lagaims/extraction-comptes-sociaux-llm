@@ -28,9 +28,9 @@ d'en-tête concaténé. **Une erreur de ±1 coûte tout le tableau.**
   au moteur ce que produit le détecteur.
 
 ::: {.dx-evidence}
-**Preuve.** Hauteur discordante sur 32 fichiers marker sur 69 et 21 chandra sur 69.
-Récupération numérique : **64,0 % quand elle concorde, 41,8 % sinon** (marker) ; 73,2 %
-contre 42,2 % (chandra). Le décalage global optimal égale l'écart de hauteur fichier par
+**Preuve.** Hauteur discordante sur 32 tableaux marker sur 69 et 22 chandra sur 73.
+Récupération numérique : **64,1 % quand elle concorde, 41,9 % sinon** (marker) ; 91,6 %
+contre 42,9 % (chandra). Le décalage global optimal égale l'écart de hauteur fichier par
 fichier (34 cas sur 36 pour un écart nul, 11 sur 13 pour +1). Mais sur les 53 fichiers
 discordants, **40 ont une source parfaitement régulière** : là, l'écart de structure est en
 amont et aucune correction de la conversion n'y changera rien.
@@ -46,16 +46,14 @@ amont et aucune correction de la conversion n'y changera rien.
 fusionne un tableau, les rangs se désynchronisent et toute la suite du SIREN est comparée
 de travers. Sur `TAB_300221017_1`, l'annotation compte 39 lignes et le CSV comparé en a 3.
 
-Le nombre de tableaux détectés diffère de la référence sur **12 SIREN sur 48 (marker)** et
-13 sur 47 (chandra) — contre 14 et 14 avant le recollage symétrique. Deux chantiers
-distincts :
+Le nombre de tableaux détectés diffère de la référence sur **10 SIREN sur 48 (marker)** et
+9 sur 48 (chandra). Deux chantiers distincts :
 
-- **Côté pipeline — la détection de frontière de tableau.** Le cas du tableau coupé par un
-  saut de page est **traité** : un bloc de début de page sans en-tête, ou qui répète celui
-  du précédent, y est recollé
-  ([règle](conversion.qmd#ce-que-les-deux-chemins-partagent)), des deux côtés de la
-  mesure. Reste ouvert : **deux tableaux voisins fusionnés en un**, soit trois
-  sous-détections par moteur.
+- **Côté pipeline — la détection de frontière de tableau.** Les tableaux ne sont pas
+  recollés : la mesure suit la granularité de l'annotation, un tableau par page. Quand marker
+  rend malgré tout un tableau d'un seul tenant, sa **référence** est regroupée d'autant, ce
+  qui a ramené ses annotations orphelines de 5 à 1. Reste ouvert : `TAB_676250111_atypique`,
+  coupé en largeur, qu'aucun regroupement par lignes ne traite.
 - **Côté évaluation — l'appariement lui-même**, qui devrait se faire par similarité de
   contenu (chevauchement des libellés de lignes) plutôt que par rang. Sinon le score
   mesure la chance d'un alignement d'index.
@@ -65,9 +63,10 @@ fiable, impossible de savoir si une correction de la segmentation améliore quoi
 soit.
 
 ::: {.dx-evidence}
-**Preuve.** 14,1 % des valeurs marker et 12,2 % des valeurs chandra (≥ 4 chiffres) sont
-absentes du CSV comparé mais présentes dans un autre CSV du même SIREN. Le recollage
-symétrique a déjà rendu 93 cellules marker à la mesure, dont 62 correctement extraites.
+**Preuve.** 13,4 % des valeurs marker et 9,7 % des valeurs chandra sont absentes du CSV
+comparé mais présentes dans un autre CSV du même SIREN : 91,3 % des valeurs marker sont
+retrouvées quelque part dans l'extraction du SIREN, contre 77,9 % dans le seul CSV apparié
+(96,9 % contre 87,2 % chez chandra).
 :::
 ::::
 

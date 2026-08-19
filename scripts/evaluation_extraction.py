@@ -36,10 +36,6 @@ import numpy as np
 import pandas as pd
 from extraction_common.s3 import get_s3_fs
 
-# La règle de continuation est celle de la conversion : le recollage côté annotation doit
-# reconnaître exactement les mêmes coupures, sinon les deux côtés divergent.
-from json_to_csv import merge_continuations
-
 BUCKET = "projet-extraction-tableaux"
 S3_ANNOTATIONS = f"{BUCKET}/annotations/clean"
 S3_EVAL_OUTPUT = f"{BUCKET}/reprise/eval/evaluation.parquet"
@@ -123,11 +119,6 @@ def _base_stem(name: str) -> str:
     return m.group(1) if m else name
 
 
-def _grid(df: pd.DataFrame) -> list[list[str]]:
-    """Grille de chaînes d'un DataFrame, forme attendue par les helpers de `json_to_csv`."""
-    return [[str(v) for v in row] for row in df.values.tolist()]
-
-
 def _rank(stem: str) -> int:
     """Rang `{siren}_{n}` d'un nom de fichier, 0 s'il n'en porte pas.
 
@@ -139,44 +130,144 @@ def _rank(stem: str) -> int:
     return int(m.group(2)) if m else 0
 
 
-def _merge_split_annotations(anns: list[pd.DataFrame], n_pred: int) -> list[pd.DataFrame]:
-    """Recolle les annotations d'un SIREN que la conversion a livrées en un seul tableau.
+# ── Coupures de page : granularité de la référence, propre au moteur ───────────
+#
+# Un tableau à cheval sur deux pages est annoté une page par fichier. Chandra est appelé
+# page par page et rend la même segmentation : rien à faire. Marker reçoit le PDF entier et
+# son `TableGroup` enjambe parfois la coupure — sur 3 des 6 documents multi-pages du
+# corpus. Face à un tableau marker d'un seul tenant, l'annotation `_2` n'est appariée à
+# rien et ses cellules quittent le dénominateur en silence.
+#
+# On regroupe donc les annotations pour la seule référence de marker, et seulement quand
+# marker a effectivement produit moins de tableaux. Les annotations de chandra ne sont
+# jamais touchées : sa mesure reste celle du découpage par page.
+METHODS_MERGING_PAGE_BREAKS = frozenset({"marker"})
 
-    Un tableau à cheval sur deux pages est annoté en deux fichiers — `_1` et `_2` — alors
-    que la conversion, depuis le recollage des sauts de page, n'en produit qu'un. Sans
-    cette symétrie, l'annotation surnuméraire n'est appariée à rien : ses cellules
-    sortent silencieusement du dénominateur, et le score est calculé sur un corpus amputé.
+
+def _same_row(left: pd.Series, right: pd.Series) -> bool:
+    """Deux lignes portent-elles exactement le même texte, à la graphie près ?"""
+    norm = [re.sub(r"\s+", " ", str(c)).strip().casefold() for c in left]
+    return norm == [re.sub(r"\s+", " ", str(c)).strip().casefold() for c in right]
+
+
+def _is_label_row(row: pd.Series) -> bool:
+    """La ligne ne porte-t-elle qu'une seule cellule non vide ?
+
+    C'est la signature d'un intertitre de section — « 2. Participations (détenues à moins
+    de 50 %) » — et non celle d'un en-tête de colonnes.
+    """
+    return sum(1 for c in row if str(c).strip()) == 1
+
+
+def _has_column_header(df: pd.DataFrame) -> bool:
+    """Le tableau porte-t-il un en-tête de colonnes, intertitres mis à part ?
+
+    `detect_column_header_height` compte comme en-tête toute ligne majoritairement non
+    numérique, intertitre compris : un tableau qui s'ouvre sur « 2. Participations » puis
+    enchaîne sur des données paraît donc en avoir un. On écarte d'abord ces lignes-là.
 
     Args:
-        anns: annotations du SIREN, dans l'ordre des rangs.
-        n_pred: nombre de tableaux prédits pour ce SIREN.
+        df: tableau annoté.
 
     Returns:
-        Les annotations après recollage. Inchangées si la prédiction n'en compte pas
-        moins, ou si aucune continuation n'est reconnue — deux tableaux réellement
-        distincts, chacun avec son en-tête, ne sont jamais fusionnés.
+        True si un en-tête de colonnes subsiste après avoir ignoré les intertitres de tête.
     """
-    if n_pred >= len(anns):
-        return anns
-    merged = merge_continuations([_grid(a) for a in anns], n_pred)
-    if len(merged) == len(anns):
-        return anns
-    return [pd.DataFrame(t, dtype=str).fillna("") for t in merged]
+    i = 0
+    while i < len(df) and _is_label_row(df.iloc[i]):
+        i += 1
+    if i >= len(df):
+        return False
+    return detect_column_header_height(df.iloc[i:].reset_index(drop=True)) > 0
 
 
-def _list_pairs(fs, pred_prefix: str) -> tuple[list[tuple[str, pd.DataFrame, str]], Counter]:
+def _page_break_offset(current: pd.DataFrame, nxt: pd.DataFrame) -> int | None:
+    """`nxt` est-il la suite de `current` après une coupure de page ?
+
+    Deux formes, et deux seulement, distinguent une coupure d'une succession de tableaux
+    distincts — à largeur identique, condition nécessaire dans les deux cas :
+
+    - `nxt` **n'a pas d'en-tête de colonnes** et reprend directement sur du contenu, qu'il
+      s'agisse de données ou d'un intertitre de section : ce n'est pas un tableau autonome ;
+    - `nxt` **réimprime exactement le même en-tête**, mêmes libellés dans le même ordre,
+      comme le PDF le réimprime en tête de page.
+
+    Un tableau coupé **en largeur** — mêmes lignes, d'autres colonnes sur la page suivante
+    — n'entre dans aucun des deux cas : les largeurs diffèrent, et concaténer par lignes
+    serait faux.
+
+    Args:
+        current: tableau annoté précédent.
+        nxt: tableau annoté candidat à la suite.
+
+    Returns:
+        Le nombre de lignes de tête à écarter de `nxt` avant concaténation, ou None si les
+        deux sont deux tableaux distincts.
+    """
+    if current.empty or nxt.empty or len(current.columns) != len(nxt.columns):
+        return None
+    if not _has_column_header(nxt):
+        return 0
+    if not _same_row(current.iloc[0], nxt.iloc[0]):
+        return None
+    # L'en-tête réimprimé peut tenir sur plusieurs lignes, et les deux fichiers n'en
+    # détectent pas toujours la même hauteur : on écarte le plus long préfixe commun, ce
+    # qui s'ajuste sans dépendre de l'heuristique de détection.
+    offset = 0
+    while (
+        offset < len(nxt)
+        and offset < len(current)
+        and _same_row(current.iloc[offset], nxt.iloc[offset])
+    ):
+        offset += 1
+    return offset
+
+
+def _merge_page_breaks(anns: list[pd.DataFrame], target: int) -> list[pd.DataFrame]:
+    """Regroupe les annotations qu'une coupure de page a séparées, jusqu'à `target`.
+
+    Args:
+        anns: annotations d'un SIREN, dans l'ordre des rangs.
+        target: nombre de tableaux produits par le moteur pour ce SIREN.
+
+    Returns:
+        Les annotations après regroupement. Inchangées si le moteur n'en produit pas moins,
+        ou si aucune coupure n'est reconnue — deux tableaux réellement distincts ne sont
+        jamais fusionnés pour faire tomber le compte, la sous-détection du moteur restant
+        alors visible dans la mesure.
+    """
+    if target >= len(anns):
+        return anns
+    merged = list(anns)
+    i = 0
+    while len(merged) > target and i < len(merged) - 1:
+        offset = _page_break_offset(merged[i], merged[i + 1])
+        if offset is None:
+            i += 1
+            continue
+        suite = merged[i + 1].iloc[offset:]
+        suite.columns = merged[i].columns
+        merged[i] = pd.concat([merged[i], suite], ignore_index=True)
+        del merged[i + 1]
+    return merged
+
+
+def _list_pairs(
+    fs, pred_prefix: str, merge_page_breaks: bool = False
+) -> tuple[list[tuple[str, pd.DataFrame, str]], Counter]:
     """Apparie annotations (.xlsx) et prédictions (.csv), rang à rang au sein d'un SIREN.
 
     Args:
         fs: système de fichiers S3.
         pred_prefix: dossier des CSV prédits.
+        merge_page_breaks: regrouper les annotations qu'une coupure de page a séparées,
+            quand le moteur rend le tableau d'un seul tenant. Réservé aux moteurs qui
+            voient le PDF entier (voir `METHODS_MERGING_PAGE_BREAKS`).
 
     Returns:
         La liste des (nom de la prédiction, annotation chargée, chemin de la prédiction),
-        et le nombre de tableaux annotés par SIREN **après recollage** — c'est cette
-        segmentation-là, et non le nombre de fichiers annotés, qui fait référence pour
-        `table_count_accuracy`. L'annotation est un DataFrame et non un chemin : elle peut
-        être le recollage de plusieurs fichiers annotés (voir `_merge_split_annotations`).
+        et le nombre de tableaux annotés par SIREN, qui fait référence pour
+        `table_count_accuracy` — après regroupement le cas échéant, puisque c'est à cette
+        granularité que la comparaison a lieu.
     """
     ann = {Path(p).stem: p for p in fs.glob(f"{S3_ANNOTATIONS}/*.xlsx")}
     pred = {Path(p).stem: p for p in fs.glob(f"{pred_prefix}/*.csv")}
@@ -192,7 +283,8 @@ def _list_pairs(fs, pred_prefix: str) -> tuple[list[tuple[str, pd.DataFrame, str
     for base, names in sorted(by_base.items()):
         pred_stems = sorted((s for s in pred if _base_stem(s) == base), key=_rank)
         anns = [_load_xlsx(fs, ann[n]) for n in sorted(names, key=_rank)]
-        anns = _merge_split_annotations(anns, len(pred_stems))
+        if merge_page_breaks:
+            anns = _merge_page_breaks(anns, len(pred_stems))
         ann_counts[base] = len(anns)
         for i, ann_df in enumerate(anns):
             if i >= len(pred_stems):
@@ -608,7 +700,9 @@ def evaluate_dataset(threshold: float = 0.5, cell_delta: int = 0) -> pd.DataFram
             correspondances = _load_correspondances(fs)
             ann_counts = Counter({siren: len(paths) for siren, paths in correspondances.items()})
         else:
-            pairs, ann_counts = _list_pairs(fs, pred_prefix)
+            pairs, ann_counts = _list_pairs(
+                fs, pred_prefix, merge_page_breaks=method in METHODS_MERGING_PAGE_BREAKS
+            )
         print(f"\n[{method}] {len(pairs)} paire(s) trouvée(s)")
 
         pred_counts = _count_per_base(fs, pred_prefix, ".csv")

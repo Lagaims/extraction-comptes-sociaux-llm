@@ -304,10 +304,9 @@ def _annotations(fs: s3fs.S3FileSystem) -> dict[str, str]:
 def diagnose_file(data: dict, min_overlap: float) -> list[dict]:
     """Mesure chaque tableau d'un JSON marker.
 
-    Le rang suit l'ordre des blocs, donc la numérotation des CSV telle qu'elle était
-    avant le recollage des sauts de page : c'est ainsi que l'évaluation publiée apparie
-    `{stem}_{rang}.xlsx` et `{stem}_{rang}.csv`, et la comparaison doit porter sur le
-    même appariement.
+    Le rang suit l'ordre des blocs, donc la numérotation des CSV : c'est ainsi que
+    l'évaluation apparie `{stem}_{rang}.xlsx` et `{stem}_{rang}.csv`, et la comparaison
+    doit porter sur le même appariement.
 
     Args:
         data: JSON marker complet.
@@ -318,23 +317,22 @@ def diagnose_file(data: dict, min_overlap: float) -> list[dict]:
     """
     rows = []
     rank = 0
-    for blocks in MarkerTableExtractor().table_blocks_by_page(data):
-        for block in blocks:
-            grids = _parse_html_tables(block.get("html") or "")
-            cells = _table_cells(block)
-            for grid in grids:
-                rank += 1
-                mesures = {"rang": rank, "bloc": block.get("id")}
-                mesures.update(
-                    describe_table(cells, grid, min_overlap)
-                    if cells
-                    else {
-                        "axe_lignes": None,
-                        "n_lignes_html": len(grid),
-                        "n_colonnes_html": max((len(r) for r in grid), default=0),
-                    }
-                )
-                rows.append(mesures)
+    for block in MarkerTableExtractor().table_blocks(data):
+        grids = _parse_html_tables(block.get("html") or "")
+        cells = _table_cells(block)
+        for grid in grids:
+            rank += 1
+            mesures = {"rang": rank, "bloc": block.get("id")}
+            mesures.update(
+                describe_table(cells, grid, min_overlap)
+                if cells
+                else {
+                    "axe_lignes": None,
+                    "n_lignes_html": len(grid),
+                    "n_colonnes_html": max((len(r) for r in grid), default=0),
+                }
+            )
+            rows.append(mesures)
     return rows
 
 

@@ -28,8 +28,8 @@ Chaque moteur a son format de sortie, donc son propre chemin de code.
 | Contenu d'un tableau | HTML `<table>` | HTML `<table>` depuis la reprise de l'API ; matrice de chaînes déjà découpée dans les fichiers du corpus |
 | Information de fusion | `colspan`, `rowspan` | `colspan`, `rowspan` depuis la reprise de l'API ; **aucune** dans les fichiers du corpus |
 | Travail de la conversion | analyser le HTML, développer les fusions | replacer les sous-lignes d'en-tête |
-| Travail commun aux deux | recoller les tableaux coupés par un saut de page, rectangulariser | idem |
-| Tableaux produits (48 PDF) | 78 | 87 |
+| Travail commun aux deux | rectangulariser la grille | idem |
+| Tableaux produits (48 PDF) | 78 | 88 |
 
 :::
 
@@ -81,8 +81,7 @@ Le JSON de marker est un arbre de blocs typés, chacun portant un `block_type`, 
 
 Grâce à cette dernière règle, **plus aucune des 78 grilles marker ne ressort à lignes
 inégales** (18 auparavant). Marker déclarant ses fusions en `colspan`, ses lignes
-d'en-tête sont déjà à la bonne largeur : seuls jouent ensuite la règle des lignes-labels
-et le recollage des sauts de page.
+d'en-tête sont déjà à la bonne largeur : seule joue ensuite la règle des lignes-labels.
 
 ## chandra — la grille est déjà là
 
@@ -102,8 +101,7 @@ groupées par page.
 
 - `ChandraTableExtractor` parcourt les pages dans l'ordre et concatène leurs tableaux.
 - 42 fichiers tiennent en une page, 5 en deux, 1 en trois. Un tableau coupé par un saut de
-  page est recollé selon la règle [commune aux deux
-  moteurs](#ce-que-les-deux-chemins-partagent).
+  page reste mesuré page par page : c'est ainsi qu'il est annoté, un fichier par page.
 - Le point structurant est ce que ce format **ne contient pas** : aucune information de
   fusion. Là où marker dit `rowspan="2"`, chandra livre des lignes plates.
 
@@ -172,28 +170,17 @@ Passé l'extraction, marker et chandra suivent exactement le même code.
 **Un CSV par tableau, numéroté dans l'ordre de rencontre.** `{stem}.json` produit
 `{stem}_1.csv`, `{stem}_2.csv`… Le rang est le seul lien avec l'annotation. Dès que le
 moteur découpe ou fusionne un tableau, tout le reste du SIREN est comparé de travers — 74
-annotations face à 78 CSV marker et 87 CSV chandra.
+annotations face à 78 CSV marker et 88 CSV chandra.
 
-**Les tableaux coupés par un saut de page sont recollés.** Le premier tableau d'une page
-est recollé au dernier de la précédente si **trois conditions** sont réunies :
+**Les tableaux coupés par un saut de page ne sont pas recollés.** Un tel tableau est annoté
+en deux fichiers, un par page, chacun portant son en-tête réimprimé : la conversion suit
+cette granularité plutôt que d'en imposer une autre. Chandra, appelé page par page, s'y
+conforme naturellement.
 
-- les deux blocs ont la même largeur canonique ;
-- le bloc précédent porte au moins une ligne de données ;
-- le bloc suivant **commence directement par des données** (donc sans en-tête, donc pas un
-  tableau autonome) ou **rappelle à l'identique l'en-tête** du précédent, écarté une fois.
-
-Le recollage est restreint aux frontières de page : sur une même page, rien ne distingue
-une coupure d'une succession légitime. Il précède la normalisation, la largeur canonique
-se lisant mieux sur le tableau entier.
-
-**Le même recollage vaut côté annotation.** `merge_continuations` expose la règle hors du
-contexte des pages, et `_list_pairs` l'applique aux annotations d'un SIREN jusqu'à
-retomber sur le compte de la prédiction. Sans quoi l'annotation `_2` ne serait appariée à
-rien et ses cellules quitteraient la mesure.
-
-Reste ouvert : deux tableaux voisins qu'un moteur a **fusionnés** restent fusionnés, et
-l'appariement par rang reste à reprendre côté évaluation ([levier
-02](ameliorations.qmd)).
+Reste ouvert, côté moteur cette fois : marker reçoit le PDF entier et son `TableGroup` peut
+enjamber la coupure. Sur `790256671` et `_0334_802617647_TAB`, il rend un seul CSV pour deux
+annotations, et la seconde n'est appariée à rien. L'appariement par rang reste à reprendre
+côté évaluation ([levier 02](ameliorations.qmd)).
 
 Trois autres propriétés héritées :
 
