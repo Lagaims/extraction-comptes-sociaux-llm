@@ -4,41 +4,70 @@ subtitle: "Cinq leviers classés par impact mesuré"
 ---
 
 Le classement suit l'impact mesuré, pas la difficulté. Chaque gain a été obtenu en
-rejouant l'évaluation sur le même corpus avec le levier isolé — ils **ne s'additionnent
-pas** : les leviers 03 et 04 corrigent en partie les mêmes cellules.
+rejouant l'évaluation sur le corpus courant avec le levier isolé — ils **ne s'additionnent
+pas** : les leviers 01 et 03 corrigent en partie les mêmes cellules.
 
-**Aucun levier ne porte sur l'OCR** : les erreurs de lecture de chiffres pèsent 0,8 % des
-cellules chez marker et 1,4 % chez chandra, concentrées sur une dizaine de fichiers mal
+**Aucun levier ne porte sur l'OCR** : les erreurs de lecture de chiffres pèsent 1,0 % des
+cellules chez marker et 0,8 % chez chandra, concentrées sur une dizaine de fichiers mal
 numérisés ([détail](chiffres.qmd#erreurs-de-transcription)). Améliorer le moteur de
 reconnaissance est la piste la moins rentable du lot.
+
+::: {.callout-important appearance="simple"}
+## Le classement a changé
+
+La hauteur d'en-tête reste le meilleur **prédicteur** d'un fichier réussi ou raté, mais le
+remède qui lui était associé — mesurer aussi la variante décalée — a été rejoué et ne
+rapporte rien : **+0,0 pt chez marker, +1,6 pt chez chandra** sur les fichiers concernés. Il
+passe donc en dernier, comme diagnostic et non comme levier. C'est l'appariement des
+libellés qui prend la tête.
+:::
 
 ## Les cinq leviers
 
 :::: {.dx-finding}
-[01]{.dx-rank} [+32 pts sur les fichiers concernés]{.dx-impact}
+[01]{.dx-rank} [+5,5 pts de `col_recovery` · +10,4 pts de récupération]{.dx-impact}
 
-### Corriger la détection de hauteur d'en-tête
+### Rendre l'appariement des libellés robuste aux variantes typographiques
 
-`detect_column_header_height` décide seule du début de la zone de données et du texte
-d'en-tête concaténé. **Une erreur de ±1 coûte tout le tableau.**
+L'appariement compare les libellés par distance de Levenshtein brute, puis applique le
+seuil de 0,5 *après* le matching stable. Trois faiblesses, chacune mesurée séparément :
 
-- Lui donner un **jeu de tests dédié** sur les tableaux de filiales et participations.
-- Ajouter une **mesure de repli** : si la hauteur détectée diffère entre annotation et
-  prédiction, mesurer aussi la variante décalée et retenir la meilleure — sinon on impute
-  au moteur ce que produit le détecteur.
+- **Casse, accents et ponctuation comptent.** `'A - FILIALES DETENUES'` contre
+  `'A – FILIALES DETENUES'` — un tiret demi-cadratin — tombe à 0,26. Normaliser avant
+  comparaison : **+1,2 pt de `col_recovery`**.
+- **Un mot ajouté fait chuter la similarité.** `'Capital'` contre `'Capital | Nette'`
+  donne 0,47, juste sous le seuil. Une similarité par inclusion de jetons combinée à
+  Levenshtein : **+5,5 pts de `col_recovery`** (0,840 → 0,895).
+- **L'appariement stable ne maximise pas la similarité totale**, et le seuil appliqué
+  ensuite jette des paires valides (15 cas chez marker). Le remplacer par un appariement
+  optimal (Hongrois), ou mieux par un **alignement monotone** qui respecte l'ordre des
+  lignes : **récupération numérique 52,7 → 63,1 %**.
 
-::: {.dx-evidence}
-**Preuve.** Hauteur discordante sur 32 tableaux marker sur 69 et 22 chandra sur 73.
-Récupération numérique : **64,1 % quand elle concorde, 41,9 % sinon** (marker) ; 91,6 %
-contre 42,9 % (chandra). Le décalage global optimal égale l'écart de hauteur fichier par
-fichier (34 cas sur 36 pour un écart nul, 11 sur 13 pour +1). Mais sur les 53 fichiers
-discordants, **40 ont une source parfaitement régulière** : là, l'écart de structure est en
-amont et aucune correction de la conversion n'y changera rien.
+L'alignement monotone a un second avantage, propre à ce corpus : il rend impossible
+l'appariement croisé de deux filiales d'un même groupe aux noms voisins — erreur observée
+à plusieurs reprises, que ni le seuil ni l'appariement stable n'empêchent.
+
+::: {.dx-scroll}
+
+| Variante | `col_recovery` | `row_recovery` | récup. numérique globale | structure et valeurs |
+|---|---:|---:|---:|---:|
+| Actuelle (Levenshtein brut + appariement stable) | 0,840 | 0,832 | 0,527 | 38,6 % |
+| Levenshtein normalisé + appariement stable | 0,852 | 0,838 | 0,535 | 38,6 % |
+| Levenshtein normalisé + Hongrois | 0,850 | 0,835 | 0,541 | 40,0 % |
+| Levenshtein + jetons, Hongrois | **0,895** | **0,866** | 0,596 | **42,9 %** |
+| Levenshtein + jetons, alignement monotone | 0,893 | 0,859 | **0,631** | **42,9 %** |
+
+: Méthode marker, 70 paires. La récupération globale est pondérée par cellule, hors cellules vides ; la dernière colonne compte les tableaux dont toutes les lignes, toutes les colonnes et toutes les valeurs non vides sont retrouvées.
+
 :::
+
+Le même rejeu sur chandra donne 0,916 → **0,949** de `col_recovery` et 0,686 → **0,744** de
+récupération : le levier vaut pour les deux moteurs, sans réglage propre à l'un d'eux.
+
 ::::
 
 :::: {.dx-finding}
-[02]{.dx-rank} [≈ 14 % des valeurs, 11 fichiers]{.dx-impact}
+[02]{.dx-rank} [≈ 11 % des valeurs, 10 fichiers]{.dx-impact}
 
 ### Réapparier les tableaux autrement que par leur rang
 
@@ -46,8 +75,8 @@ amont et aucune correction de la conversion n'y changera rien.
 fusionne un tableau, les rangs se désynchronisent et toute la suite du SIREN est comparée
 de travers. Sur `TAB_300221017_1`, l'annotation compte 39 lignes et le CSV comparé en a 3.
 
-Le nombre de tableaux détectés diffère de la référence sur **10 SIREN sur 48 (marker)** et
-9 sur 48 (chandra). Deux chantiers distincts :
+Le nombre de tableaux détectés diffère de la référence sur **9 SIREN sur 48 (marker)** et
+8 sur 48 (chandra). Deux chantiers distincts :
 
 - **Côté pipeline — la détection de frontière de tableau.** Les tableaux ne sont pas
   recollés : la mesure suit la granularité de l'annotation, un tableau par page. Quand marker
@@ -63,21 +92,21 @@ fiable, impossible de savoir si une correction de la segmentation améliore quoi
 soit.
 
 ::: {.dx-evidence}
-**Preuve.** 13,4 % des valeurs marker et 9,7 % des valeurs chandra sont absentes du CSV
-comparé mais présentes dans un autre CSV du même SIREN : 91,3 % des valeurs marker sont
-retrouvées quelque part dans l'extraction du SIREN, contre 77,9 % dans le seul CSV apparié
-(96,9 % contre 87,2 % chez chandra).
+**Preuve.** 11,2 % des valeurs marker et 10,3 % des valeurs chandra sont absentes du CSV
+comparé mais présentes dans un autre CSV du même SIREN : 91,2 % des valeurs marker sont
+retrouvées quelque part dans l'extraction du SIREN, contre 80,1 % dans le seul CSV apparié
+(95,7 % contre 85,4 % chez chandra).
 :::
 ::::
 
 :::: {.dx-finding}
-[03]{.dx-rank} [+5,8 pts marker · +6,6 pts chandra]{.dx-impact}
+[03]{.dx-rank} [+5,8 pts marker · +8,8 pts chandra]{.dx-impact}
 
 ### Traiter le décalage d'une colonne, massif chez chandra
 
 Une fois ligne et colonne appariées, la valeur attendue se trouve souvent une colonne plus
-loin. Avec une tolérance de ±1 colonne, la récupération numérique passe de 51,1 à 56,8 %
-(marker) et de 58,3 à 64,9 % (chandra).
+loin. Avec une tolérance de ±1 colonne, la récupération numérique passe de 52,7 à 58,5 %
+(marker) et de 68,6 à 77,3 % (chandra).
 
 - **Bug à corriger d'abord :** `--cell-delta 1` existe mais ne s'applique qu'à
   `total_extraction`, pas à `numeric_recovery`, contrairement à ce qu'annonce son aide.
@@ -87,74 +116,71 @@ loin. Avec une tolérance de ±1 colonne, la récupération numérique passe de 
   que les fusions et les en-têtes s'alignent.
 
 ::: {.dx-evidence}
-**Preuve.** 177 cellules marker et 555 cellules chandra sont en « bonne ligne, colonne
-décalée » — 3,2 % et 10,3 % des cellules attendues ; la tolérance ±1 en rattrape 316 et
-356.
+**Preuve.** 177 cellules marker et 500 cellules chandra sont en « bonne ligne, colonne
+décalée » — 3,2 % et 9,0 % des cellules attendues ; la tolérance ±1 en rattrape 317 et 485,
+soit davantage que ce seul poste : elle récupère aussi des cellules classées ailleurs.
 :::
 ::::
 
 :::: {.dx-finding}
-[04]{.dx-rank} [+6 pts de col_recovery, +5,6 pts de récupération]{.dx-impact}
-
-### Rendre l'appariement des libellés robuste aux variantes typographiques
-
-L'appariement compare les libellés par distance de Levenshtein brute, puis applique le
-seuil de 0,5 *après* le matching stable. Trois faiblesses :
-
-- **Casse, accents et ponctuation comptent.** `'A - FILIALES DETENUES'` contre
-  `'A – FILIALES DETENUES'` — un tiret demi-cadratin — tombe à 0,26. Normaliser avant
-  comparaison : **+1,8 pt de `col_recovery`**.
-- **Un mot ajouté fait chuter la similarité.** `'Capital'` contre `'Capital | Nette'`
-  donne 0,47, juste sous le seuil. Une similarité par inclusion de jetons combinée à
-  Levenshtein : **+6,1 pts de `col_recovery`** (0,781 → 0,842).
-- **L'appariement stable ne maximise pas la similarité totale**, et le seuil appliqué
-  ensuite jette des paires valides (16 cas chez marker). Le remplacer par un appariement
-  optimal (Hongrois), ou mieux par un **alignement monotone** qui respecte l'ordre des
-  lignes : **récupération numérique 42,0 → 47,6 %**.
-
-L'alignement monotone a un second avantage, propre à ce corpus : il rend impossible
-l'appariement croisé de deux filiales d'un même groupe aux noms voisins — erreur observée
-à plusieurs reprises, que ni le seuil ni l'appariement stable n'empêchent.
-
-::: {.dx-scroll}
-
-| Variante | `col_recovery` | `row_recovery` | récup. numérique globale | structure complète |
-|---|---:|---:|---:|---:|
-| Actuelle (Levenshtein brut + appariement stable) | 0,781 | 0,799 | 0,420 | 30,4 % |
-| Levenshtein normalisé + appariement stable | 0,799 | 0,805 | 0,430 | 31,9 % |
-| Levenshtein normalisé + Hongrois | 0,799 | 0,805 | 0,434 | 31,9 % |
-| Levenshtein + jetons, Hongrois | 0,842 | 0,834 | 0,450 | 37,7 % |
-| Levenshtein + jetons, alignement monotone | 0,839 | 0,821 | **0,476** | 37,7 % |
-
-: Méthode marker, 69 paires. La récupération globale est pondérée par cellule, hors cellules vides. Les variantes ont été mesurées sur un instantané antérieur du corpus : les écarts entre lignes restent l'information utile, pas les niveaux absolus.
-
-:::
-
-Ces gains restent modestes au regard du levier 01 : l'algorithme d'appariement ne fait que
-révéler des tableaux déjà décalés.
-
-::::
-
-:::: {.dx-finding}
-[05]{.dx-rank} [+1 pt, gratuit]{.dx-impact}
+[04]{.dx-rank} [+0,7 pt, gratuit]{.dx-impact}
 
 ### Compléter la normalisation numérique
 
 `_normalize_numeric_str` gère les espaces séparateurs de milliers et les pourcentages,
-mais laisse passer trois familles d'écarts purement typographiques — 36 cellules marker et
-31 chandra.
+mais laisse passer trois familles d'écarts purement typographiques — 38 cellules marker et
+37 chandra, à chiffres identiques de part et d'autre.
 
-| Famille | Attendu | Prédit |
-|---|---|---|
-| Décimale virgule contre point | `2.08` | `2,08` |
-| Signe négatif détaché | `- 30 000` | `-30 000` |
-| Parenthèses comptables | `1 976` | `(1 976)` |
+| Famille | marker | chandra | Attendu | Prédit |
+|---|---:|---:|---|---|
+| Décimale virgule contre point | 34 | 33 | `2.08` | `2,08` |
+| Signe négatif détaché | 3 | 4 | `- 30 000` | `-30 000` |
+| Parenthèses comptables | 1 | 0 | `1 976` | `(1 976)` |
 
 Le troisième cas est révélateur : les parenthèses comptables sont reconnues par
 `_looks_numeric` pour la détection d'en-tête, mais pas par la comparaison, qui les compte
 comme fausses. **Les deux fonctions n'ont pas la même notion de « nombre ».**
 
-Peu de cellules, mais c'est du bruit qui se mélange aux vraies erreurs de lecture.
+Peu de cellules, mais c'est du bruit qui se mélange aux vraies erreurs de lecture — et le
+correctif est déjà écrit dans `build_data.py` (`_norm_num`) : il reste à le porter dans
+`evaluation_extraction.py`.
+
+::::
+
+:::: {.dx-finding}
+[05]{.dx-rank} [+0,0 pt marker · +1,6 pt chandra — diagnostic, pas remède]{.dx-impact}
+
+### Hauteur d'en-tête : le meilleur prédicteur, sans levier connu
+
+`detect_column_header_height` décide seule du début de la zone de données et du texte
+d'en-tête concaténé, et **une erreur de ±1 sépare un bon fichier d'un mauvais** : la
+récupération vaut 64,7 % quand la hauteur concorde entre annotation et prédiction, 43,4 %
+sinon (marker) ; 91,7 % contre 44,8 % (chandra).
+
+Le remède qui semblait s'imposer a été rejoué et ne donne rien :
+
+- **forcer la hauteur de l'annotation sur la prédiction** : +2 cellules sur tout le corpus
+  marker ;
+- **décaler la grille prédite de l'écart de hauteur**, puis tout réévaluer — détection et
+  appariement compris : **+0,0 pt chez marker, +1,6 pt chez chandra** sur les fichiers
+  concernés.
+
+::: {.dx-evidence}
+**Pourquoi ça ne rapporte rien.** Sur les fichiers à en-tête discordant, une lecture
+purement positionnelle — appariement court-circuité, décalage global optimal appliqué —
+plafonne à **50,7 % chez marker** (contre 43,4 % aujourd'hui) et 69,4 % chez chandra
+(contre 44,8 %). Chez marker, il n'y a donc presque rien à récupérer par la structure : ces
+fichiers sont découpés autrement, pas décalés. Et sur les 52 fichiers discordants des deux
+moteurs, **49 ont une source parfaitement régulière** — le moteur y a produit une autre
+structure d'en-tête, en amont de la conversion.
+:::
+
+Ce qui reste utile, et peu coûteux :
+
+- lui donner un **jeu de tests dédié** sur les tableaux de filiales et participations, pour
+  que la détection ne régresse pas ;
+- **publier la concordance de hauteur** à côté des métriques : c'est le meilleur indicateur
+  d'avance ou de recul disponible, même s'il ne se corrige pas côté mesure.
 
 ::::
 
@@ -167,8 +193,8 @@ les gains des leviers seront illisibles.
 - **Sortir les cellules vides du dénominateur.** 34,2 % des cellules comptées dans
   `numeric_recovery` sont des cellules vides de l'annotation, créditées quand la prédiction
   est vide au même endroit. Les compter à part, et publier la version pondérée par cellule
-  à côté de la moyenne par fichier, qui surpondère les petits tableaux (0,90 sous 40
-  cellules, 0,53 au-delà de 270).
+  à côté de la moyenne par fichier, qui surpondère les petits tableaux (0,91 sous 40
+  cellules, 0,54 au-delà de 264).
 - **Rendre visible l'absence d'une méthode déclarée.** `opendataloader` figure dans
   `METHODS` mais ne produit aucun CSV : il disparaît du parquet sans avertissement. Soit
   il sort du périmètre, soit l'évaluation lève un avertissement explicite. Sur ses 48
@@ -182,15 +208,16 @@ les gains des leviers seront illisibles.
 ## Ordre de travail
 
 1. **Corrections de mesure** ci-dessus — sinon rien de ce qui suit n'est mesurable.
-2. **Levier 01** — le garde-fou sur la hauteur d'en-tête. Rapide, et il donne la vraie base
-   de comparaison.
+2. **Levier 01, volet « jetons »** — la similarité par inclusion de jetons, puis
+   l'alignement monotone. C'est le seul gain à deux chiffres du lot, et il vaut pour les
+   deux moteurs.
 3. **Levier 02, volet évaluation** — appariement par contenu. Débloque la mesure des
    fichiers découpés.
-4. **Faire porter l'information de fusion par le JSON de l'API chandra**, plutôt que de la
-   déduire à la conversion : seule solution déterministe, celle dont marker dispose déjà.
-5. **Leviers 04 puis 05.** Le levier 03 n'est à retenir que comme indicateur de suivi.
+4. **Levier 04** — la normalisation : quelques lignes à porter depuis `build_data.py`.
+5. **Le levier 03 n'est à retenir que comme indicateur de suivi, et le levier 05 que comme
+   diagnostic** : publier la concordance de hauteur d'en-tête, sans en attendre de gain.
 
-Le levier 02, volet pipeline, est le plus lourd. Son cas le plus fréquent — le tableau
+Le levier 02, volet pipeline, reste le plus lourd. Son cas le plus fréquent — le tableau
 coupé par un saut de page — est traité des deux côtés. Ce qui reste, deux tableaux voisins
-fusionnés en un (trois SIREN par moteur), demande de reprendre la segmentation en amont :
-prioritaire une fois les cinq étapes ci-dessus faites.
+fusionnés en un, demande de reprendre la segmentation en amont : prioritaire une fois les
+étapes ci-dessus faites.
