@@ -25,9 +25,9 @@ Chaque moteur a son format de sortie, donc son propre chemin de code.
 |---|---|---|
 | Entrée S3 | `reprise/output_marker/*.json` | `reprise/output_chandra/*.json` |
 | Structure du fichier | arbre de blocs (`Document` → `Page` → …) | plat : `pages[]` |
-| Contenu d'un tableau | HTML `<table>` | HTML `<table>` depuis la reprise de l'API ; matrice de chaînes déjà découpée dans les fichiers du corpus |
-| Information de fusion | `colspan`, `rowspan` | `colspan`, `rowspan` depuis la reprise de l'API ; **aucune** dans les fichiers du corpus |
-| Travail de la conversion | analyser le HTML, développer les fusions | replacer les sous-lignes d'en-tête |
+| Contenu d'un tableau | HTML `<table>` | HTML `<table>` ; matrice de chaînes déjà découpée dans le format aplati archivé (`output_chandra_v1`) |
+| Information de fusion | `colspan`, `rowspan` — 219 et 354 balises, 41 et 37 documents sur 48 | `colspan`, `rowspan` — 156 et 297 balises, 40 et 33 documents ; **aucune** dans le format aplati archivé |
+| Travail de la conversion | analyser le HTML, développer les fusions | idem ; replacer les sous-lignes d'en-tête si le format aplati est relu |
 | Travail commun aux deux | rectangulariser la grille | idem |
 | Tableaux produits (48 PDF) | 78 | 88 |
 
@@ -83,10 +83,10 @@ Grâce à cette dernière règle, **plus aucune des 78 grilles marker ne ressort
 inégales** (18 auparavant). Marker déclarant ses fusions en `colspan`, ses lignes
 d'en-tête sont déjà à la bonne largeur : seule joue ensuite la règle des lignes-labels.
 
-## chandra — la grille est déjà là
+## chandra — du HTML, comme marker
 
-Chandra ne renvoie pas de HTML : ses tableaux sont des listes de listes de chaînes,
-groupées par page.
+Chandra renvoie le HTML du modèle, une entrée par page. Le format historique, aplati en
+listes de listes de chaînes, reste lu par la conversion :
 
 ``` json
 {
@@ -99,11 +99,14 @@ groupées par page.
   ] }
 ```
 
-- `ChandraTableExtractor` parcourt les pages dans l'ordre et concatène leurs tableaux.
+- `ChandraTableExtractor` parcourt les pages dans l'ordre et concatène leurs tableaux ;
+  celles qui portent du HTML passent par le parseur de marker, donc par le même traitement
+  déterministe des fusions.
 - 42 fichiers tiennent en une page, 5 en deux, 1 en trois. Un tableau coupé par un saut de
   page reste mesuré page par page : c'est ainsi qu'il est annoté, un fichier par page.
-- Le point structurant est ce que ce format **ne contient pas** : aucune information de
-  fusion. Là où marker dit `rowspan="2"`, chandra livre des lignes plates.
+- **Le corpus `reprise/output_chandra/` est au format HTML** : 55 pages, 88 grilles, et les
+  fusions y sont déclarées. Le format aplati — qui n'en portait aucune, là où marker dit
+  `rowspan="2"` — est archivé dans `reprise/output_chandra_v1/`.
 
 ::: {.callout-important appearance="simple"}
 ## L'information n'avait pas été perdue, elle était jetée
@@ -113,9 +116,9 @@ bloc, vérifié en soumettant une page au serveur vllm. C'est l'API qui l'aplati
 écriture.
 
 L'API renvoie désormais ce HTML tel quel (`pages[].html`), lu par le parseur de marker :
-mêmes fusions, mêmes règles. Les fichiers du corpus `reprise/` restent au format aplati —
-les rattraper suppose une nouvelle extraction. La conversion lit les deux formats ; tout
-ce qui suit décrit le traitement des fichiers existants.
+mêmes fusions, mêmes règles. **Le corpus a été ré-extrait à ce format** ; l'ancien reste
+disponible dans `reprise/output_chandra_v1/`. La conversion lit les deux, et ce qui suit
+décrit ce qu'elle fait du format aplati — sans effet sur le corpus courant.
 :::
 
 ### La normalisation des lignes
@@ -143,8 +146,8 @@ dans cet ordre :
 
 - **Le vocabulaire réglementaire** — le seul en-tête à sous-colonnes est le bloc « valeurs
   comptables » / « valeur d'inventaire ». Un libellé parent qui en relève, **et seulement
-  s'il est unique** dans sa ligne, est le libellé couvrant. Joue sur **25 des 88 grilles
-  brutes chandra**.
+  s'il est unique** dans sa ligne, est le libellé couvrant. Jouait sur **25 des 88 grilles
+  du format aplati** ; sur le corpus HTML courant, la règle 2 ne se déclenche plus du tout.
 - **L'unicité du candidat** — si la ligne parente n'offre qu'un seul libellé susceptible
   de couvrir des sous-colonnes (non vide, non numérique, hors première colonne), il n'y a
   rien à trancher. La première colonne est exclue : elle porte les raisons sociales.
@@ -169,7 +172,7 @@ Passé l'extraction, marker et chandra suivent exactement le même code.
 
 **Un CSV par tableau, numéroté dans l'ordre de rencontre.** `{stem}.json` produit
 `{stem}_1.csv`, `{stem}_2.csv`… Le rang est le seul lien avec l'annotation. Dès que le
-moteur découpe ou fusionne un tableau, tout le reste du SIREN est comparé de travers — 74
+moteur découpe ou fusionne un tableau, tout le reste du SIREN est comparé de travers — 75
 annotations face à 78 CSV marker et 88 CSV chandra.
 
 **Les tableaux coupés par un saut de page ne sont pas recollés.** Un tel tableau est annoté
