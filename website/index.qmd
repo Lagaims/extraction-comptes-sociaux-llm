@@ -15,19 +15,19 @@ cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de
       l'extraction (marker&nbsp;; 96&nbsp;% pour chandra)</span>
   </div>
   <div class="dx-tile">
-    <span class="dx-tile-val">56&nbsp;%</span>
-    <span class="dx-tile-lab">arrivent dans la bonne cellule (marker&nbsp;; 66&nbsp;%
+    <span class="dx-tile-val">59&nbsp;%</span>
+    <span class="dx-tile-lab">arrivent dans la bonne cellule (marker&nbsp;; 75&nbsp;%
       pour chandra)</span>
   </div>
   <div class="dx-tile">
-    <span class="dx-tile-val" style="color:var(--dx-st-manquante-ink)">35&nbsp;pts</span>
-    <span class="dx-tile-lab">d'écart entre les deux chez marker, 30 chez chandra : de la
+    <span class="dx-tile-val" style="color:var(--dx-st-manquante-ink)">32&nbsp;pts</span>
+    <span class="dx-tile-lab">d'écart entre les deux chez marker, 21 chez chandra : de la
       donnée correctement lue, mais mal placée</span>
   </div>
   <div class="dx-tile">
     <span class="dx-tile-val">1&nbsp;%</span>
     <span class="dx-tile-lab">des cellules portent une vraie erreur de lecture de
-      chiffres (54 sur 5&nbsp;505 chez marker, 47 sur 5&nbsp;530 chez chandra)</span>
+      chiffres (56 sur 5&nbsp;506 chez marker, 49 sur 5&nbsp;531 chez chandra)</span>
   </div>
 </div>
 ```
@@ -35,13 +35,13 @@ cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de
 ## Les cinq conclusions
 
 - **Le goulot n'est pas l'OCR.** Les erreurs de lecture de chiffres pèsent 1,0 % des
-  cellules chez marker et 0,8 % chez chandra. À l'inverse, un tiers des cellules marker sont
-  perdues faute de ligne ou de colonne appariée.
+  cellules chez marker et 0,9 % chez chandra. À l'inverse, plus d'un quart des cellules
+  marker sont perdues faute de ligne ou de colonne appariée.
 - **Le meilleur prédicteur est la hauteur d'en-tête** — mais aucun remède mesuré ne la
   rattrape. La récupération numérique vaut **64,7 % quand la hauteur détectée concorde
-  entre annotation et prédiction, 43,4 % sinon** (marker) ; 91,7 % contre 44,8 %
-  (chandra). Elle discorde sur 31 tableaux marker sur 70
-  et 21 chandra sur 74. Forcer la bonne hauteur, ou décaler la grille d'autant, ne rend
+  entre annotation et prédiction, 47,8 % sinon** (marker) ; 92,4 % contre 54,1 %
+  (chandra). Elle discorde sur 31 tableaux marker sur 71
+  et 19 chandra sur 75. Forcer la bonne hauteur, ou décaler la grille d'autant, ne rend
   que 0,0 pt chez marker et 1,6 pt chez chandra : sur ces fichiers l'appariement des
   libellés échoue aussi, et une lecture purement positionnelle plafonnerait à 50,7 %.
 - **Le décalage est le plus souvent global.** Un simple décalage réaligne 90 % du tableau
@@ -52,9 +52,10 @@ cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de
   autre structure d'en-tête, en amont.
 - **Une partie de l'écart n'est pas imputable aux moteurs.** Un tiers des « cellules
   numériques » de `numeric_recovery` sont des cellules vides — 34,2 % chez marker, 34,1 %
-  chez chandra — et l'appariement par rang compare parfois deux tableaux différents : les
-  tableaux ne sont pas recollés, donc un moteur qui découpe autrement que l'annotation
-  décale toute la suite du SIREN.
+  chez chandra — et l'appariement par rang compare parfois deux tableaux différents : un
+  moteur qui découpe autrement que l'annotation décale toute la suite du SIREN. Les blocs
+  qu'une page chandra sépare sont désormais recollés d'après son balisage (voir [Du JSON au
+  CSV](conversion.qmd)) ; il reste 5 SIREN sur 48 où le compte diffère.
 
 ## Les quatre pages
 
@@ -70,7 +71,7 @@ cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de
 
 - Corpus `s3://projet-extraction-tableaux/reprise/` : **48 PDF** scannés, **75 tableaux**
   annotés à la main.
-- **144 paires** annotation/prédiction évaluées : marker 70, chandra 74.
+- **146 paires** annotation/prédiction évaluées : marker 71, chandra 75.
 - Les fonctions d'évaluation du dépôt — `detect_column_header_height`, `_match_headers`,
   `_normalize_numeric_str` — sont réutilisées telles quelles : le diagnostic décrit le
   pipeline en place, pas une réimplémentation.

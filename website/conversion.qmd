@@ -101,11 +101,12 @@ listes de listes de chaînes, reste lu par la conversion :
 
 - `ChandraTableExtractor` parcourt les pages dans l'ordre et concatène leurs tableaux ;
   celles qui portent du HTML passent par le parseur de marker, donc par le même traitement
-  déterministe des fusions.
+  déterministe des fusions, puis par le recollage des blocs décrit
+  [plus bas](#les-blocs-dune-même-page-recollés).
 - 42 fichiers tiennent en une page, 5 en deux, 1 en trois. Un tableau coupé par un saut de
   page reste mesuré page par page : c'est ainsi qu'il est annoté, un fichier par page.
-- **Le corpus `reprise/output_chandra/` est au format HTML** : 55 pages, 88 grilles, et les
-  fusions y sont déclarées. Le format aplati — qui n'en portait aucune, là où marker dit
+- **Le corpus `reprise/output_chandra/` est au format HTML** : 55 pages, 88 grilles — 79
+  après recollage — et les fusions y sont déclarées. Le format aplati — qui n'en portait aucune, là où marker dit
   `rowspan="2"` — est archivé dans `reprise/output_chandra_v1/`.
 
 ::: {.callout-important appearance="simple"}
@@ -120,6 +121,44 @@ mêmes fusions, mêmes règles. **Le corpus a été ré-extrait à ce format** ;
 disponible dans `reprise/output_chandra_v1/`. La conversion lit les deux, et ce qui suit
 décrit ce qu'elle fait du format aplati — sans effet sur le corpus courant.
 :::
+
+### Les blocs d'une même page, recollés
+
+Chandra ne rend pas des tableaux, mais une **segmentation de mise en page** : un
+`<div data-label="Table">` par région visuelle contiguë, interrompue dès qu'un autre bloc
+s'intercale. Un tableau que traverse un intertitre de section ressort donc en plusieurs
+`<table>` — quatre pour `468_316701416_TAB`, sept sur une page de `411373525`. Le modèle
+n'annonce aucune continuation, mais son balisage dit lequel de ces blocs est un tableau
+entier. Sur les 88 grilles du corpus, 74 déclarent un `<thead>` et un `<tbody>` ; les 14
+autres tiennent à cinq fichiers, dont les trois que le recollage réunit.
+
+Trois signaux, lus dans la sortie du modèle et non déduits des nombres :
+
+| Signal | Lecture |
+|---|---|
+| `<thead>` sans aucune ligne de `td` | tableau inachevé : la suite de la page le complète |
+| aucune ligne de plusieurs `th` | bloc sans en-tête propre : suite du tableau en cours |
+| `th`/`td` unique en `colspan` pleine largeur | intertitre, pas un en-tête de colonnes |
+
+Un bloc qui réimprime un vrai en-tête reste un tableau distinct : dans une même page, un
+en-tête répété désigne deux tableaux de même forme (`_1465_652027384_TAB`, quatre tableaux
+rouvrant tous sur « (en milliers d'euros) | 31/12/2021 | 31/12/2020 »), pas une suite. Le
+recollage exige en outre une largeur de colonnes identique — un tableau coupé en largeur ne
+se recolle jamais par lignes — et ne franchit jamais une page.
+
+**Le texte des intertitres est rendu au tableau**, faute de quoi il est perdu : il est hors
+de toute balise `<table>`. Deux sorts selon la géométrie. Quand le bloc `Section-Header`
+chevauche le bord supérieur du tableau — il commence au-dessus et finit dedans — c'est un
+libellé de ligne que le modèle a sorti de sa cellule : sur `411373525`, chaque raison
+sociale part ainsi, ne laissant que l'adresse dans la ligne, et aucun des dix CSV du SIREN
+ne contenait le mot « Vallourec ». Le texte est alors recollé en tête de cellule, comme
+l'annotation le fait. Sinon il devient une ligne-label, mais seulement devant un bloc sans
+en-tête de colonnes propre : devant un bloc qui a le sien, c'est le titre du tableau, et
+l'annotation ne le porte pas davantage.
+
+Effet sur le corpus : 88 grilles ramenées à 79, trois fichiers touchés, aucun autre modifié
+d'une seule ligne. `468_316701416_TAB` passe de 4 CSV à 1 et `411373525` de 10 à 5, tous
+deux au compte exact de leur annotation.
 
 ### La normalisation des lignes
 
@@ -173,7 +212,7 @@ Passé l'extraction, marker et chandra suivent exactement le même code.
 **Un CSV par tableau, numéroté dans l'ordre de rencontre.** `{stem}.json` produit
 `{stem}_1.csv`, `{stem}_2.csv`… Le rang est le seul lien avec l'annotation. Dès que le
 moteur découpe ou fusionne un tableau, tout le reste du SIREN est comparé de travers — 75
-annotations face à 78 CSV marker et 88 CSV chandra.
+annotations face à 78 CSV marker et 79 CSV chandra.
 
 **Les tableaux coupés par un saut de page ne sont pas recollés.** Un tel tableau est annoté
 en deux fichiers, un par page, chacun portant son en-tête réimprimé : la conversion suit

@@ -8,9 +8,21 @@ rejouant l'évaluation sur le corpus courant avec le levier isolé — ils **ne 
 pas** : les leviers 01 et 03 corrigent en partie les mêmes cellules.
 
 **Aucun levier ne porte sur l'OCR** : les erreurs de lecture de chiffres pèsent 1,0 % des
-cellules chez marker et 0,8 % chez chandra, concentrées sur une dizaine de fichiers mal
+cellules chez marker et 0,9 % chez chandra, concentrées sur une dizaine de fichiers mal
 numérisés ([détail](chiffres.qmd#erreurs-de-transcription)). Améliorer le moteur de
 reconnaissance est la piste la moins rentable du lot.
+
+::: {.callout-warning appearance="simple"}
+## Les gains chiffrés sont à rejouer
+
+Chaque gain de cette page a été obtenu en rejouant l'évaluation avec le levier isolé, sur
+un corpus antérieur à deux changements : le recollage des blocs d'une même page côté
+chandra, et la correction d'une annotation de `432668432`. Les points de départ ont bougé —
+`col_recovery` 0,840 → **0,856** (marker) et 0,916 → **0,946** (chandra), récupération par
+cellule 52,7 → **55,2 %** et 68,6 → **75,6 %** (voir [Chiffres et
+cas](chiffres.qmd#métriques-publiées)). Le classement des leviers reste valable, les points
+d'arrivée sont à remesurer. Les mesures ne relevant pas d'un rejeu, elles, sont à jour.
+:::
 
 ::: {.callout-important appearance="simple"}
 ## Le classement a changé
@@ -75,14 +87,16 @@ récupération : le levier vaut pour les deux moteurs, sans réglage propre à l
 fusionne un tableau, les rangs se désynchronisent et toute la suite du SIREN est comparée
 de travers. Sur `TAB_300221017_1`, l'annotation compte 39 lignes et le CSV comparé en a 3.
 
-Le nombre de tableaux détectés diffère de la référence sur **9 SIREN sur 48 (marker)** et
-8 sur 48 (chandra). Deux chantiers distincts :
+Le nombre de tableaux détectés diffère de la référence sur **8 SIREN sur 48 (marker)** et
+5 sur 48 (chandra). Deux chantiers distincts :
 
-- **Côté pipeline — la détection de frontière de tableau.** Les tableaux ne sont pas
-  recollés : la mesure suit la granularité de l'annotation, un tableau par page. Quand marker
-  rend malgré tout un tableau d'un seul tenant, sa **référence** est regroupée d'autant, ce
-  qui a ramené ses annotations orphelines de 5 à 1. Reste ouvert : `TAB_676250111_atypique`,
-  coupé en largeur, qu'aucun regroupement par lignes ne traite.
+- **Côté pipeline — la détection de frontière de tableau.** Les tableaux coupés par un saut
+  de page ne sont pas recollés : la mesure suit la granularité de l'annotation, un tableau
+  par page. Les blocs qu'une même page chandra sépare, eux, le sont désormais d'après son
+  balisage, ce qui a réglé `468_316701416_TAB` et `411373525`. Quand marker rend malgré tout
+  un tableau d'un seul tenant, sa **référence** est regroupée d'autant, ce qui a ramené ses
+  annotations orphelines de 5 à 1. Reste ouvert : `TAB_676250111_atypique`, coupé en
+  largeur, qu'aucun regroupement par lignes ne traite.
 - **Côté évaluation — l'appariement lui-même**, qui devrait se faire par similarité de
   contenu (chevauchement des libellés de lignes) plutôt que par rang. Sinon le score
   mesure la chance d'un alignement d'index.
@@ -92,10 +106,10 @@ fiable, impossible de savoir si une correction de la segmentation améliore quoi
 soit.
 
 ::: {.dx-evidence}
-**Preuve.** 11,2 % des valeurs marker et 10,3 % des valeurs chandra sont absentes du CSV
+**Preuve.** 7,2 % des valeurs marker et 1,6 % des valeurs chandra sont absentes du CSV
 comparé mais présentes dans un autre CSV du même SIREN : 91,2 % des valeurs marker sont
-retrouvées quelque part dans l'extraction du SIREN, contre 80,1 % dans le seul CSV apparié
-(95,7 % contre 85,4 % chez chandra).
+retrouvées quelque part dans l'extraction du SIREN, contre 84,0 % dans le seul CSV apparié
+(95,7 % contre 94,1 % chez chandra).
 :::
 ::::
 
@@ -116,8 +130,8 @@ loin. Avec une tolérance de ±1 colonne, la récupération numérique passe de 
   que les fusions et les en-têtes s'alignent.
 
 ::: {.dx-evidence}
-**Preuve.** 177 cellules marker et 500 cellules chandra sont en « bonne ligne, colonne
-décalée » — 3,2 % et 9,0 % des cellules attendues ; la tolérance ±1 en rattrape 317 et 485,
+**Preuve.** 180 cellules marker et 492 cellules chandra sont en « bonne ligne, colonne
+décalée » — 3,3 % et 8,9 % des cellules attendues ; la tolérance ±1 en rattrape 317 et 485,
 soit davantage que ce seul poste : elle récupère aussi des cellules classées ailleurs.
 :::
 ::::

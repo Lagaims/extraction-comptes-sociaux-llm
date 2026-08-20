@@ -25,6 +25,7 @@ import json
 import re
 import unicodedata
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -380,37 +381,45 @@ class ChandraTableExtractor(TableExtractor):
       ]
     }
 
-    Le premier porte les fusions (`colspan`, `rowspan`) et les `<br>` : il emprunte le
-    parseur de marker, donc le même traitement déterministe des fusions. Le second les a
-    déjà perdus — la conversion ne peut que replacer les sous-lignes d'en-tête au mieux
-    (`_align_header_subrows`). Les deux restent lus : les JSON déjà déposés sur S3 sont au
-    format historique.
+    Le premier porte les fusions (`colspan`, `rowspan`), les `<br>` et le découpage en
+    blocs de mise en page : il emprunte le parseur de marker, donc le même traitement
+    déterministe des fusions, et son balisage permet de recoller les blocs d'un même
+    tableau (`_merge_chandra_blocks`). Le second a tout perdu — la conversion ne peut que
+    replacer les sous-lignes d'en-tête au mieux (`_align_header_subrows`), et n'a rien
+    pour recoller quoi que ce soit. Les deux restent lus : les JSON déjà déposés sur S3
+    sont au format historique.
     """
 
     def extract(self, data: dict) -> list[Table]:
+        pages = data.get("pages", [])
+        # Les blocs de toutes les pages avant d'en recoller aucune : les titres courants
+        # ne se reconnaissent qu'à l'échelle du document.
+        blocks = {i: _chandra_page_blocks(p["html"]) for i, p in enumerate(pages) if p.get("html")}
+        titles = _running_titles(list(blocks.values()))
+
         tables = []
-        for page in data.get("pages", []):
-            for table in self._page_tables(page):
+        for i, page in enumerate(pages):
+            for table in self._page_tables(page, blocks.get(i), titles):
                 normalized = _normalize_chandra_table(table)
                 if normalized:
                     tables.append(normalized)
         return tables
 
     @staticmethod
-    def _page_tables(page: dict) -> list[Table]:
+    def _page_tables(page: dict, blocks: "list[_Block] | None", titles: set[str]) -> list[Table]:
         """Grilles d'une page, quel que soit le format de la sortie chandra.
 
         Args:
             page: entrée de `pages`, portant soit `html`, soit `tables`.
+            blocks: blocs de la page, ou None pour le format historique.
+            titles: titres courants du document.
 
         Returns:
-            Les grilles de la page. Celles issues du HTML sortent déjà normalisées du
-            parseur ; `_normalize_grid` étant idempotent, la suite du traitement est la
-            même dans les deux cas.
+            Les grilles brutes de la page, recollées quand le HTML dit qu'un tableau se
+            poursuit d'un bloc à l'autre. La normalisation vient après, dans `extract`.
         """
-        html = page.get("html")
-        if html:
-            return _parse_html_tables(html)
+        if blocks is not None:
+            return _merge_chandra_blocks(blocks, titles)
         return [table for table in page.get("tables") or [] if table]
 
 
@@ -423,6 +432,211 @@ class OpenDataLoaderTableExtractor(TableExtractor):
 
     def extract(self, data: str) -> list[Table]:
         return _parse_html_tables(data)
+
+
+# ── Balisage des blocs chandra ────────────────────────────────────────────────
+
+# Chandra rend une page comme une suite de `<div data-label=...>` — `Table`,
+# `Section-Header`, `Text`… — jamais imbriqués, et coupe une région `Table` dès qu'un
+# autre bloc l'interrompt. Un tableau que traverse un intertitre de section ressort donc
+# en plusieurs `<table>`. Mesuré sur les 88 tableaux du corpus `reprise/` : 73 blocs
+# complets, et 14 blocs incomplets concentrés sur les seuls fichiers sur-découpés.
+# Le modèle ne recolle rien et n'annonce aucune continuation, mais son balisage dit
+# lequel de ces blocs est un tableau entier — c'est ce que lisent `_Markup` et
+# `_merge_chandra_blocks`.
+
+
+@dataclass
+class _Markup:
+    """Ce que le balisage d'un `<table>` dit de sa complétude.
+
+    Attributes:
+        has_column_header: le tableau porte une ligne d'en-tête de colonnes, c'est-à-dire
+            plusieurs `th` sur une même ligne. Un `th` unique en `colspan` pleine largeur
+            est un intertitre de section — chandra en met dans le `thead` — et ne compte
+            donc pas : le prendre pour un en-tête ferait passer une suite de tableau pour
+            un tableau autonome.
+        has_data_row: le tableau porte au moins une ligne de `td`. Un bloc qui n'a que
+            son en-tête est un tableau inachevé, que la suite de la page complète.
+    """
+
+    has_column_header: bool = False
+    has_data_row: bool = False
+
+
+@dataclass
+class _Block:
+    """Bloc de mise en page d'une page chandra.
+
+    Attributes:
+        label: `data-label` du bloc, ou "" pour un `<table>` hors de tout bloc étiqueté —
+            chandra omet parfois `data-label` (`380129866`), la conversion ne peut donc
+            pas en dépendre pour trouver ses tableaux.
+        bbox: `data-bbox` (x0, y0, x1, y1), ou None si absent ou illisible.
+        text: texte du bloc hors tableaux, `<br>` ramenés à des espaces.
+        tables: grilles brutes portées par le bloc, non normalisées.
+        markups: balisage de chacune, dans le même ordre.
+    """
+
+    label: str
+    bbox: tuple[int, int, int, int] | None = None
+    text: str = ""
+    tables: list[Table] = field(default_factory=list)
+    markups: list[_Markup] = field(default_factory=list)
+
+
+def _read_markup(tags: list[list[tuple[str, int]]]) -> _Markup:
+    """Lit le balisage d'un tableau à partir des balises de ses cellules.
+
+    Args:
+        tags: pour chaque ligne, la liste des (balise, colspan) de ses cellules.
+
+    Returns:
+        Le `_Markup` correspondant.
+    """
+    header = any(len(row) > 1 and all(tag == "th" for tag, _ in row) for row in tags)
+    data = any(any(tag == "td" for tag, _ in row) for row in tags)
+    return _Markup(has_column_header=header, has_data_row=data)
+
+
+def _read_bbox(value: str | None) -> tuple[int, int, int, int] | None:
+    """Lit un `data-bbox`, ou None s'il est absent ou n'a pas quatre entiers."""
+    try:
+        x0, y0, x1, y1 = (int(v) for v in (value or "").split())
+    except ValueError:
+        return None
+    return x0, y0, x1, y1
+
+
+def _straddles_top(header: _Block, table: _Block) -> bool:
+    """L'intertitre déborde-t-il sur le haut du tableau qui le suit ?
+
+    Chandra sort parfois un libellé de ligne hors du tableau : sur `411373525`, chaque
+    raison sociale part dans un bloc `Section-Header` et seule l'adresse reste dans la
+    ligne. Le bloc chevauche alors le bord supérieur du tableau — il commence au-dessus
+    et finit dedans — là où un titre de tableau s'arrête avant. Le recouvrement
+    horizontal est exigé en plus : sur une page en paysage, un titre latéral couvre
+    toute la hauteur du tableau sans rien avoir à y faire.
+
+    Args:
+        header: bloc `Section-Header`.
+        table: bloc `Table` qui le suit immédiatement.
+
+    Returns:
+        True si le texte de l'intertitre appartient à la première ligne du tableau.
+    """
+    if not header.bbox or not table.bbox:
+        return False
+    hx0, hy0, hx1, hy1 = header.bbox
+    tx0, ty0, tx1, ty1 = table.bbox
+    return hy0 < ty0 < hy1 and min(hx1, tx1) > max(hx0, tx0)
+
+
+def _continues(group: Table, group_has_data: bool, table: Table, markup: _Markup) -> bool:
+    """Le tableau prolonge-t-il celui en cours, ou en ouvre-t-il un autre ?
+
+    Deux lectures du balisage, à largeur de colonnes identique — condition nécessaire,
+    un tableau coupé en largeur ne se recolle jamais par lignes :
+
+    - le bloc n'a pas d'en-tête de colonnes propre : il reprend en pleine matière, donc
+      sous l'en-tête du bloc précédent ;
+    - le tableau en cours n'a pas encore de ligne de données : c'est un en-tête orphelin,
+      que ce bloc-ci complète.
+
+    Un bloc qui réimprime un vrai en-tête de colonnes n'entre dans aucun des deux cas et
+    reste un tableau distinct : sur une même page, un en-tête répété désigne deux
+    tableaux de même forme (`_1465_652027384_TAB`), pas une suite.
+
+    Args:
+        group: grille du tableau en cours de constitution.
+        group_has_data: le tableau en cours porte-t-il déjà une ligne de données ?
+        table: grille brute du bloc candidat.
+        markup: balisage du bloc candidat.
+
+    Returns:
+        True s'il faut concaténer le bloc au tableau en cours.
+    """
+    if _canonical_width(group) != _canonical_width(table):
+        return False
+    return not markup.has_column_header or not group_has_data
+
+
+def _running_titles(pages: list[list[_Block]]) -> set[str]:
+    """Textes que le document porte en titre courant, quelle que soit la page.
+
+    Chandra n'étiquette pas ces textes de la même façon partout : sur `411373525`, la
+    page 2 les donne en `Page-Header` et la page 1 en `Section-Header`, à texte identique.
+    Un intertitre qui apparaît ailleurs comme titre ou pied de page n'appartient donc pas
+    au tableau, et le verser en ligne-label ajoute des lignes que l'annotation n'a pas.
+
+    Args:
+        pages: blocs de chaque page du document.
+
+    Returns:
+        Les textes normalisés vus au moins une fois en `Page-Header` ou `Page-Footer`.
+    """
+    return {
+        _norm(block.text).strip()
+        for page in pages
+        for block in page
+        if block.label in ("Page-Header", "Page-Footer") and block.text.strip()
+    }
+
+
+def _merge_chandra_blocks(blocks: list[_Block], titles: set[str] = frozenset()) -> list[Table]:
+    """Recolle les blocs d'une page chandra en tableaux, intertitres réinjectés.
+
+    Le recollage est borné à la page : chandra est appelé page par page et l'annotation
+    suit cette granularité, un tableau par page. Il précède la normalisation, la largeur
+    canonique et le placement des sous-lignes d'en-tête se lisant mieux sur le tableau
+    entier que sur un fragment de fin de section.
+
+    Le texte des blocs `Section-Header` est rendu au tableau, faute de quoi il est perdu :
+    il est hors de toute balise `<table>`. Deux sorts selon la géométrie et le balisage —
+    collé en tête de la première cellule quand le bloc chevauche le haut du tableau
+    (`_straddles_top`), sinon posé en ligne-label, mais seulement devant un bloc sans
+    en-tête de colonnes propre. Devant un bloc qui a le sien, c'est le titre du tableau
+    et non une de ses lignes : l'annotation ne le porte pas non plus.
+
+    Args:
+        blocks: blocs d'une page, dans l'ordre de lecture.
+        titles: textes que le document porte en titre courant (`_running_titles`), écartés
+            quelle que soit l'étiquette que chandra leur donne sur cette page-ci.
+
+    Returns:
+        Une grille brute par tableau reconstitué.
+    """
+    tables: list[Table] = []
+    has_data: list[bool] = []
+    pending: list[_Block] = []
+    for block in blocks:
+        if not block.tables:
+            if _norm(block.text).strip() in titles:
+                continue
+            # Un bloc sans tableau qui n'est pas un intertitre rompt le voisinage : un
+            # intertitre séparé de son tableau par un paragraphe ne lui appartient plus.
+            pending = pending + [block] if block.label == "Section-Header" else []
+            continue
+
+        labels = []
+        for header in pending:
+            if _straddles_top(header, block) and block.tables[0] and block.tables[0][0]:
+                first = block.tables[0][0]
+                first[0] = f"{header.text} {first[0]}".strip()
+            else:
+                labels.append([header.text])
+        pending = []
+
+        for table, markup in zip(block.tables, block.markups, strict=True):
+            head = labels if not markup.has_column_header else []
+            labels = []
+            if tables and _continues(tables[-1], has_data[-1], table, markup):
+                tables[-1] = tables[-1] + head + table
+                has_data[-1] = has_data[-1] or markup.has_data_row
+            else:
+                tables.append(head + table)
+                has_data.append(markup.has_data_row)
+    return tables
 
 
 # ── Parser HTML interne (Marker) ──────────────────────────────────────────────
@@ -456,6 +670,8 @@ class _TableHTMLParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.tables: list[Table] = []
+        # Parallèle à `tables` : ce que le balisage dit de chaque grille.
+        self.markups: list[_Markup] = []
         self._rows: list[list[str]] = []
         self._row: list[str] = []
         self._cell: str = ""
@@ -464,6 +680,9 @@ class _TableHTMLParser(HTMLParser):
         self._rowspan: int = 1
         # {index de colonne: nombre de lignes que la fusion couvre encore}
         self._carried: dict[int, int] = {}
+        # (balise, colspan) de chaque cellule, ligne par ligne, pour le tableau courant.
+        self._tags: list[list[tuple[str, int]]] = []
+        self._row_tags: list[tuple[str, int]] = []
 
     @staticmethod
     def _span(value) -> int:
@@ -513,15 +732,18 @@ class _TableHTMLParser(HTMLParser):
             attrs_dict = dict(attrs)
             self._colspan = self._span(attrs_dict.get("colspan", 1))
             self._rowspan = self._span(attrs_dict.get("rowspan", 1))
+            self._row_tags.append((tag, self._colspan))
         elif tag == "br" and self._in_cell:
             self._cell += " "
         elif tag == "tr":
             self._row = []
+            self._row_tags = []
             # Une fusion verticale ouverte sur une ligne précédente occupe déjà le
             # début de celle-ci : ces positions sont pourvues avant la première cellule.
             self._fill_carried()
         elif tag == "table":
             self._rows = []
+            self._tags = []
             self._carried = {}
 
     def handle_endtag(self, tag):
@@ -544,8 +766,10 @@ class _TableHTMLParser(HTMLParser):
             self._close_row()
             if self._row:
                 self._rows.append(self._row)
+                self._tags.append(self._row_tags)
         elif tag == "table" and self._rows:
             self.tables.append(self._rows)
+            self.markups.append(_read_markup(self._tags))
             self._carried = {}
 
     def handle_data(self, data):
@@ -565,6 +789,83 @@ def _parse_html_tables(html: str) -> list[Table]:
     parser = _TableHTMLParser()
     parser.feed(html)
     return [_normalize_grid(table) for table in parser.tables]
+
+
+class _ChandraPageParser(_TableHTMLParser):
+    """Découpe une page chandra en blocs de mise en page, tableaux rattachés.
+
+    Le découpage sert à deux choses que le contenu des `<table>` ne dit pas : borner le
+    recollage à la page et à ses blocs voisins, et récupérer le texte des intertitres,
+    qui appartient au tableau sans être dedans.
+
+    Les blocs de chandra ne s'imbriquent jamais — vérifié sur les 55 pages du corpus,
+    profondeur de `div` maximale de 1 : un bloc court donc jusqu'à l'ouverture du
+    suivant. Le rattachement ne peut pas pour autant reposer sur l'étiquetage seul,
+    `380129866` sortant ses `div` avec un `data-bbox` en double et aucun `data-label` :
+    un `<table>` hors de tout bloc étiqueté forme son propre bloc, sans voisinage.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.blocks: list[_Block] = []
+        # Pour chaque bloc, l'index du premier de ses tableaux dans `tables`.
+        self._starts: list[int] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "div":
+            attrs_dict = dict(attrs)
+            if "data-label" in attrs_dict:
+                self.blocks.append(
+                    _Block(
+                        label=attrs_dict["data-label"],
+                        bbox=_read_bbox(attrs_dict.get("data-bbox")),
+                    )
+                )
+                self._starts.append(len(self.tables))
+        elif tag == "br" and not self._in_cell and self.blocks:
+            self.blocks[-1].text += " "
+        super().handle_starttag(tag, attrs)
+
+    def handle_data(self, data):
+        if not self._in_cell and self.blocks:
+            self.blocks[-1].text += data
+        super().handle_data(data)
+
+    def page_blocks(self) -> list[_Block]:
+        """Blocs de la page, dans l'ordre de lecture.
+
+        Returns:
+            Les blocs, chacun portant ses grilles brutes et leur balisage. Les tableaux
+            rencontrés avant tout bloc étiqueté forment autant de blocs sans étiquette,
+            placés en tête.
+        """
+        bounds = self._starts + [len(self.tables)]
+        for i, block in enumerate(self.blocks):
+            block.tables = self.tables[bounds[i] : bounds[i + 1]]
+            block.markups = self.markups[bounds[i] : bounds[i + 1]]
+            block.text = " ".join(block.text.split())
+        unlabelled = [
+            _Block(label="", tables=[table], markups=[markup])
+            for table, markup in zip(
+                self.tables[: bounds[0]], self.markups[: bounds[0]], strict=True
+            )
+        ]
+        return unlabelled + self.blocks
+
+
+def _chandra_page_blocks(html: str) -> list[_Block]:
+    """Parse une page chandra et retourne ses blocs de mise en page.
+
+    Args:
+        html: HTML brut d'une page, tel que rendu par le VLM.
+
+    Returns:
+        Les blocs, dans l'ordre de lecture, tableaux et balisage rattachés. Le recollage
+        vient après, une fois les titres courants du document connus.
+    """
+    parser = _ChandraPageParser()
+    parser.feed(html)
+    return parser.page_blocks()
 
 
 # ── Sérialisation ─────────────────────────────────────────────────────────────

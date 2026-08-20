@@ -603,6 +603,264 @@ def test_table_group_sans_bloc_table_reste_retenu():
     assert MarkerTableExtractor().extract(data) == [[["Entité A", "1"]]]
 
 
+# ── recollage des blocs chandra d'une même page ───────────────────────────────
+
+
+def chandra_page(html: str) -> list[list[list[str]]]:
+    """Passe une page chandra à l'extracteur et retourne ses tableaux."""
+    return ChandraTableExtractor().extract({"pages": [{"page": 1, "html": html}]})
+
+
+ENTETE = "<thead><tr><th>Sociétés</th><th>Capital</th><th>Résultat</th></tr></thead>"
+
+
+def test_chandra_entete_orphelin_recolle_avec_les_blocs_suivants():
+    """Un `<thead>` sans `<tbody>` est un tableau inachevé, complété par la suite.
+
+    Cas de `468_316701416_TAB` : chandra coupe le tableau à chaque intertitre de
+    section et rend l'en-tête de colonnes seul, puis trois corps sans en-tête. Sans
+    recollage, la conversion écrit quatre CSV pour un tableau, et les rangs se
+    désynchronisent de ceux de l'annotation pour tout le SIREN.
+    """
+    html = (
+        f'<div data-bbox="71 75 565 125" data-label="Table"><table>{ENTETE}</table></div>'
+        '<div data-bbox="71 138 565 278" data-label="Table"><table><tbody>'
+        "<tr><td>Entité A</td><td>1 000</td><td>250</td></tr></tbody></table></div>"
+        '<div data-bbox="71 291 565 338" data-label="Table"><table><tbody>'
+        "<tr><td>Entité B</td><td>2 000</td><td>500</td></tr></tbody></table></div>"
+    )
+    assert chandra_page(html) == [
+        [
+            ["Sociétés", "Capital", "Résultat"],
+            ["Entité A", "1 000", "250"],
+            ["Entité B", "2 000", "500"],
+        ]
+    ]
+
+
+def test_chandra_entete_reimprime_reste_un_autre_tableau():
+    """Deux blocs portant chacun un vrai en-tête de colonnes sont deux tableaux.
+
+    Cas de `_1465_652027384_TAB` : quatre tableaux d'une même page rouvrent tous sur
+    « (en milliers d'euros) | 31/12/2021 | 31/12/2020 ». Un en-tête réimprimé dans une
+    même page désigne un autre tableau de même forme, pas une suite — et les deux dates
+    de cet en-tête interdisent de s'en remettre au comptage des cellules numériques.
+    """
+    bloc = (
+        '<div data-label="Table"><table>'
+        "<thead><tr><th>(en milliers d'euros)</th><th>31/12/2021</th>"
+        "<th>31/12/2020</th></tr></thead>"
+        "<tbody><tr><td>{nom}</td><td>100 270</td><td>61 286</td></tr></tbody>"
+        "</table></div>"
+    )
+    tables = chandra_page(bloc.format(nom="Entité A") + bloc.format(nom="Entité B"))
+    assert len(tables) == 2
+    assert tables[0][1] == ["Entité A", "100 270", "61 286"]
+    assert tables[1][1] == ["Entité B", "100 270", "61 286"]
+
+
+def test_chandra_intertitre_dans_le_thead_ne_fait_pas_un_tableau():
+    """Un `th` unique en `colspan` pleine largeur est un intertitre, pas un en-tête.
+
+    Cas de `552142200` : le bloc de suite s'ouvre sur
+    `<thead><tr><th colspan="3">I. Filiales</th></tr></thead>`. Compté comme en-tête de
+    colonnes, il ferait passer la suite du tableau pour un tableau autonome.
+    """
+    html = (
+        f'<div data-label="Table"><table>{ENTETE}</table></div>'
+        '<div data-label="Table"><table>'
+        '<thead><tr><th colspan="3">I. Filiales (50 % au moins)</th></tr></thead>'
+        "<tbody><tr><td>Entité A</td><td>1 000</td><td>250</td></tr></tbody>"
+        "</table></div>"
+    )
+    assert chandra_page(html) == [
+        [
+            ["Sociétés", "Capital", "Résultat"],
+            ["I. Filiales (50 % au moins)", "", ""],
+            ["Entité A", "1 000", "250"],
+        ]
+    ]
+
+
+def test_chandra_toutes_les_lignes_dans_le_thead_reste_un_tableau_complet():
+    """Un bloc qui met ses données dans le `thead` est complet, malgré l'absence de tbody.
+
+    Cas de `974_380097881_TAB` : chandra n'ouvre jamais de `<tbody>` et écrit les lignes
+    de données en `<td>` dans le `<thead>`. C'est la présence de lignes de données qui
+    fait le tableau entier, pas la balise qui les entoure — sans quoi ce bloc passerait
+    pour un en-tête orphelin et absorberait le tableau suivant.
+    """
+    html = (
+        '<div data-label="Table"><table><thead>'
+        "<tr><th>Sociétés</th><th>Capital</th><th>Résultat</th></tr>"
+        "<tr><td>Entité A</td><td>1 000</td><td>250</td></tr>"
+        "</thead></table></div>"
+        f'<div data-label="Table"><table>{ENTETE}'
+        "<tbody><tr><td>Entité B</td><td>2 000</td><td>500</td></tr></tbody>"
+        "</table></div>"
+    )
+    assert len(chandra_page(html)) == 2
+
+
+def test_chandra_largeurs_differentes_ne_se_recollent_pas():
+    """Un tableau coupé en largeur ne se recolle jamais par lignes."""
+    html = (
+        f'<div data-label="Table"><table>{ENTETE}</table></div>'
+        '<div data-label="Table"><table><tbody>'
+        "<tr><td>Entité A</td><td>1 000</td></tr></tbody></table></div>"
+    )
+    assert len(chandra_page(html)) == 2
+
+
+def test_chandra_intertitre_devient_une_ligne_label():
+    """L'intertitre entre deux blocs recollés revient dans le tableau.
+
+    Il est hors de toute balise `<table>` : sans reprise, il est perdu. L'annotation le
+    porte comme ligne-label, à cette place exacte.
+    """
+    html = (
+        f'<div data-bbox="71 75 565 125" data-label="Table"><table>{ENTETE}</table></div>'
+        '<div data-bbox="71 125 565 138" data-label="Section-Header">'
+        "<p><b>A. Renseignements détaillés</b></p></div>"
+        '<div data-bbox="71 138 565 278" data-label="Table"><table><tbody>'
+        "<tr><td>Entité A</td><td>1 000</td><td>250</td></tr></tbody></table></div>"
+    )
+    assert chandra_page(html) == [
+        [
+            ["Sociétés", "Capital", "Résultat"],
+            ["A. Renseignements détaillés", "", ""],
+            ["Entité A", "1 000", "250"],
+        ]
+    ]
+
+
+def test_chandra_titre_du_tableau_nest_pas_une_ligne():
+    """Un intertitre devant un bloc qui a son propre en-tête est le titre du tableau.
+
+    L'annotation ne le porte pas : le tableau commence à son en-tête de colonnes.
+    """
+    html = (
+        '<div data-bbox="71 62 1000 75" data-label="Section-Header">'
+        "<p><b>Liste des filiales et participations</b></p></div>"
+        f'<div data-bbox="71 75 565 125" data-label="Table"><table>{ENTETE}'
+        "<tbody><tr><td>Entité A</td><td>1 000</td><td>250</td></tr></tbody>"
+        "</table></div>"
+    )
+    assert chandra_page(html) == [
+        [["Sociétés", "Capital", "Résultat"], ["Entité A", "1 000", "250"]]
+    ]
+
+
+def test_chandra_libelle_extrait_du_tableau_revient_dans_sa_cellule():
+    """Une raison sociale sortie du tableau est recollée en tête de sa cellule.
+
+    Cas de `411373525` : chandra place chaque raison sociale dans un `Section-Header` et
+    ne laisse que l'adresse dans la ligne, une ligne par bloc `Table`. Le bloc chevauche
+    le bord supérieur du tableau — il commence au-dessus et finit dedans — là où un titre
+    s'arrête avant. L'annotation réunit nom et adresse dans la même cellule.
+    """
+    html = (
+        '<div data-bbox="81 138 218 159" data-label="Section-Header">'
+        "VALLOUREC TUBES<br/>France</div>"
+        '<div data-bbox="81 157 584 216" data-label="Table"><table>'
+        "<tr><td>27, avenue du Général-Leclerc</td><td>918 466</td><td>-</td></tr>"
+        "</table></div>"
+    )
+    assert chandra_page(html) == [
+        [["VALLOUREC TUBES France 27, avenue du Général-Leclerc", "918 466", "-"]]
+    ]
+
+
+def test_chandra_titre_lateral_dune_page_paysage_nentre_pas_dans_une_cellule():
+    """Sur une page en paysage, le titre latéral couvre la hauteur du tableau.
+
+    Son ordonnée est comprise dans celle du tableau au lieu d'en chevaucher le bord
+    supérieur, et il ne le recouvre pas horizontalement : ce n'est pas un libellé de
+    ligne, et il ne doit pas être collé en tête de cellule. Cinq titres du corpus y
+    atterriraient sans ces deux garde-fous. Il retombe sur le sort commun des
+    intertitres, une ligne-label, qui laisse les données intactes.
+    """
+    html = (
+        '<div data-bbox="36 469 56 948" data-label="Section-Header">'
+        "NOTE 14. LISTE DES FILIALES</div>"
+        '<div data-bbox="161 8 829 990" data-label="Table"><table>'
+        "<tr><td>Entité A</td><td>918 466</td><td>-</td></tr>"
+        "</table></div>"
+    )
+    assert chandra_page(html) == [
+        [["NOTE 14. LISTE DES FILIALES", "", ""], ["Entité A", "918 466", "-"]]
+    ]
+
+
+def test_chandra_intertitre_separe_par_un_paragraphe_ne_revient_pas():
+    """Un bloc quelconque entre l'intertitre et le tableau rompt le voisinage."""
+    html = (
+        f'<div data-label="Table"><table>{ENTETE}</table></div>'
+        '<div data-label="Section-Header"><p>A. Renseignements détaillés</p></div>'
+        '<div data-label="Text"><p>Les montants sont exprimés en euros.</p></div>'
+        '<div data-label="Table"><table><tbody>'
+        "<tr><td>Entité A</td><td>1 000</td><td>250</td></tr></tbody></table></div>"
+    )
+    assert chandra_page(html) == [
+        [["Sociétés", "Capital", "Résultat"], ["Entité A", "1 000", "250"]]
+    ]
+
+
+def test_chandra_titre_courant_nentre_pas_dans_le_tableau():
+    """Un titre courant reste dehors, même étiqueté `Section-Header` sur sa page.
+
+    Cas de `411373525` : chandra étiquette « Vallourec Tubes » et la date des comptes
+    `Page-Header` en page 2, et `Section-Header` en page 1, à texte identique. Sans le
+    recoupement, ces deux lignes entraient en tête du premier tableau de la page 1, que
+    l'annotation donne sans elles — un tableau jusque-là parfaitement extrait.
+    """
+    data = {
+        "pages": [
+            {
+                "page": 1,
+                "html": (
+                    '<div data-bbox="70 32 200 46" data-label="Section-Header">'
+                    "Vallourec Tubes</div>"
+                    '<div data-bbox="60 85 555 195" data-label="Table"><table><tbody>'
+                    "<tr><td>Provisions pour risques</td><td>5 235</td></tr>"
+                    "</tbody></table></div>"
+                ),
+            },
+            {
+                "page": 2,
+                "html": (
+                    '<div data-bbox="448 30 580 44" data-label="Page-Header">'
+                    "Vallourec Tubes</div>"
+                    '<div data-bbox="81 157 584 216" data-label="Table"><table><tbody>'
+                    "<tr><td>Entité A</td><td>918 466</td></tr></tbody></table></div>"
+                ),
+            },
+        ]
+    }
+    assert ChandraTableExtractor().extract(data) == [
+        [["Provisions pour risques", "5 235"]],
+        [["Entité A", "918 466"]],
+    ]
+
+
+def test_chandra_tableau_hors_bloc_etiquete_est_conserve():
+    """Un `<table>` hors de tout `data-label` reste un tableau à part entière.
+
+    Cas de `380129866` : chandra sort ses `div` avec un `data-bbox` en double et aucun
+    `data-label`. Faire dépendre la recherche des tableaux de l'étiquetage perdrait ici
+    la page entière.
+    """
+    html = (
+        '<div data-bbox="89 133 924 529" data-bbox="89 133 924 529">'
+        f"<table>{ENTETE}"
+        "<tbody><tr><td>Entité A</td><td>1 000</td><td>250</td></tr></tbody>"
+        "</table></div>"
+    )
+    assert chandra_page(html) == [
+        [["Sociétés", "Capital", "Résultat"], ["Entité A", "1 000", "250"]]
+    ]
+
+
 # ── régénération : purge des rangs surnuméraires ──────────────────────────────
 
 
