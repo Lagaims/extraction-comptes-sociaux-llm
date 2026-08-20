@@ -191,6 +191,97 @@ def test_br_devient_une_espace_dans_la_cellule():
     assert parse_one(html) == [["Entité A Paris"]]
 
 
+# ── enregistrements empilés sur deux lignes physiques ────────────────────────
+
+
+def test_deux_valeurs_empilees_donnent_deux_lignes():
+    """Un enregistrement composé sur deux lignes ressort sur deux lignes.
+
+    Cas de `_0334_394331946_TAB` : l'en-tête est sur deux niveaux — « Dénomination /
+    Siège Social », « Capital / Capitaux Propres » — et chaque société occupe deux lignes
+    sans filet entre elles. Le moteur rend une seule `<tr>` dont chaque cellule porte ses
+    deux valeurs séparées par un `<br>`. Aplaties en une espace, les deux montants se
+    retrouvent soudés dans la même cellule et aucun ne s'apparie : la récupération
+    numérique du fichier tombe à 0,044 au lieu de 1,000.
+    """
+    html = (
+        "<table><tbody><tr>"
+        "<td>MDHA<br/>6 West 18th Street, New York 10011</td>"
+        "<td>14 498 145<br/>12 789 320</td>"
+        "<td>10 601 766<br/>10 601 766</td>"
+        "</tr></tbody></table>"
+    )
+    assert parse_one(html) == [
+        ["MDHA", "14 498 145", "10 601 766"],
+        ["6 West 18th Street, New York 10011", "12 789 320", "10 601 766"],
+    ]
+
+
+def test_cellule_sans_coupure_reste_sur_la_premiere_ligne():
+    """Une colonne renseignée une seule fois par enregistrement n'est pas dupliquée.
+
+    « Prêts, avances » ne porte qu'une valeur là où les autres colonnes en portent deux :
+    elle appartient à la première ligne, et la seconde reste vide — c'est la convention
+    de l'annotation.
+    """
+    html = (
+        "<table><tbody><tr>"
+        "<td>MDHA<br/>New York</td>"
+        "<td>14 498 145<br/>12 789 320</td>"
+        "<td>16 843 046</td>"
+        "<td>18 344 543<br/>1 387 889</td>"
+        "</tr></tbody></table>"
+    )
+    assert parse_one(html) == [
+        ["MDHA", "14 498 145", "16 843 046", "18 344 543"],
+        ["New York", "12 789 320", "", "1 387 889"],
+    ]
+
+
+def test_libelle_replie_ne_coupe_pas_la_ligne():
+    """Un libellé replié en fin de ligne reste une seule ligne.
+
+    Cas de `411373525` : la raison sociale et l'adresse tiennent sur plusieurs lignes
+    dans leur cellule, mais elles seules portent un `<br>`. Couper ici scinderait une
+    ligne de données parfaitement formée.
+    """
+    html = (
+        "<table><tbody><tr>"
+        "<td>VALLOUREC TUBES<br/>France<br/>27, avenue du Général-Leclerc</td>"
+        "<td>918 466</td><td>253 625</td>"
+        "</tr></tbody></table>"
+    )
+    assert parse_one(html) == [
+        ["VALLOUREC TUBES France 27, avenue du Général-Leclerc", "918 466", "253 625"]
+    ]
+
+
+def test_deux_libelles_coupes_sans_nombres_ne_coupent_pas():
+    """Deux cellules repliées ne suffisent pas : il faut des nombres empilés.
+
+    Sans cette exigence, un en-tête dont deux libellés se replient serait scindé en deux
+    lignes d'en-tête, et toute la grille glisserait d'un cran.
+    """
+    html = (
+        "<table><tbody><tr>"
+        "<th>Filiales et<br/>participations</th>"
+        "<th>Capital<br/>social</th>"
+        "<th>Résultat</th>"
+        "</tr></tbody></table>"
+    )
+    assert parse_one(html) == [["Filiales et participations", "Capital social", "Résultat"]]
+
+
+def test_nombres_empiles_dans_une_seule_cellule_ne_coupent_pas():
+    """Une seule cellule empilant deux nombres ne fait pas un enregistrement double."""
+    html = (
+        "<table><tbody><tr>"
+        "<td>Entité A</td><td>1 000<br/>2 000</td><td>500</td>"
+        "</tr></tbody></table>"
+    )
+    assert parse_one(html) == [["Entité A", "1 000 2 000", "500"]]
+
+
 def test_lignes_vides_ignorees():
     html = "<table><tbody><tr></tr><tr><td>a</td></tr></tbody></table>"
     assert parse_one(html) == [["a"]]

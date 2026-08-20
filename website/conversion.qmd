@@ -205,13 +205,47 @@ déclencherait pas ailleurs. La solution de fond reste en amont : que l'API chan
 transmette ses fusions en `colspan`, comme marker.
 :::
 
+### Les enregistrements empilés, découpés
+
+Certains tableaux composent un enregistrement sur **deux lignes physiques sans filet entre
+elles**, l'en-tête l'annonçant sur deux niveaux :
+
+```
+Denomination  | Capital          | Q.P. Detenue   | Val. brute Titres | Chiffre d'affaires
+Siège Social  | Capitaux Propres | Divid.encaiss. | Val. nette Titres | Résultat
+```
+
+Les moteurs lisent cette page telle qu'elle est composée et rendent une seule `<tr>` par
+société, chaque cellule portant ses deux valeurs séparées par un `<br>` :
+
+```html
+<td>MDHA<br/>6 West 18th Street, New York 10011</td>
+<td>14 498 145$<br/>12 789 320$</td>
+```
+
+Rien n'est perdu à ce stade. C'est la conversion qui décidait : le `<br>` devenait une
+espace, et `14 498 145$ 12 789 320$` se retrouvait dans une seule cellule. Aucune des deux
+valeurs ne s'appariait plus, alors que l'annotation garde une ligne par ligne physique —
+sur `_0334_394331946_TAB`, la récupération numérique tombait à **0,044**.
+
+Le `<br>` est donc rendu, selon la ligne, à une espace ou à une coupure. La signature doit
+rester étroite, un libellé replié en fin de ligne portant lui aussi un `<br>` : il faut
+**plusieurs cellules coupées, toutes du même nombre de parties, dont au moins deux empilant
+deux nombres**. Une cellule renseignée une seule fois va sur la première ligne produite,
+la seconde restant vide — la convention de l'annotation.
+
+Sur les 1 209 lignes chandra du corpus, 9 déclenchent la règle, toutes dans ce fichier ;
+10 sur 1 234 chez marker, dans ce fichier et une ligne de `432668432` où deux sociétés sont
+empilées de la même façon. Le fichier passe de 11 à 20 lignes et de 0,044 à **1,000** de
+récupération numérique ; aucun autre CSV du corpus ne change d'une seule ligne.
+
 ## Ce que les deux chemins partagent
 
 Passé l'extraction, marker et chandra suivent exactement le même code.
 
 **Un CSV par tableau, numéroté dans l'ordre de rencontre.** `{stem}.json` produit
 `{stem}_1.csv`, `{stem}_2.csv`… Le rang est le seul lien avec l'annotation. Dès que le
-moteur découpe ou fusionne un tableau, tout le reste du SIREN est comparé de travers — 75
+moteur découpe ou fusionne un tableau, tout le reste du SIREN est comparé de travers — 76
 annotations face à 78 CSV marker et 79 CSV chandra.
 
 **Les tableaux coupés par un saut de page ne sont pas recollés.** Un tel tableau est annoté

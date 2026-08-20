@@ -73,6 +73,10 @@ _NUMERIC_CELL_RE = re.compile(r"^[(\-−+]?\d[\d\s  .,%()€$/–—-]*$")
 # d'en-tête, et c'est sa cellule de continuation que les moteurs omettent.
 _GROUP_HEADER_RE = re.compile(r"valeur|inventaire")
 
+# Marque interne d'un `<br>` dans une cellule, le temps du parsing. Elle ne survit pas à
+# `_split_stacked_rows`, qui la rend soit à une espace, soit à une coupure de ligne.
+_BR = "\x00"
+
 
 def _norm(value: str) -> str:
     """Minuscule sans accents, pour reconnaître un libellé quelle que soit sa graphie."""
@@ -246,6 +250,62 @@ def _normalize_grid(table: Table) -> Table:
         else:
             normalized.append(row)
     return _rectangularize(normalized)
+
+
+def _stacked_parts(row: list[str]) -> list[list[str]] | None:
+    """La ligne empile-t-elle plusieurs enregistrements, un par ligne physique ?
+
+    Certains tableaux composent un enregistrement sur deux lignes sans filet entre elles,
+    l'en-tête l'annonçant sur deux niveaux : « Dénomination / Siège Social », « Capital /
+    Capitaux Propres », « Val. brute Titres / Val. nette Titres »
+    (`_0334_394331946_TAB`). Les moteurs rendent alors une seule `<tr>` dont chaque
+    cellule porte ses deux valeurs séparées par un `<br>` — lecture fidèle de la page,
+    mais l'annotation, elle, garde une ligne par ligne physique.
+
+    La signature doit rester étroite : un libellé simplement replié en fin de ligne porte
+    lui aussi un `<br>`, et le couper en deux lignes serait faux. Trois conditions donc,
+    qu'une cellule isolée ne peut pas remplir — plusieurs cellules coupées, toutes du même
+    nombre de parties, et au moins deux d'entre elles empilant deux nombres. Sur le corpus
+    `reprise/`, 9 lignes sur 1 209 chez chandra et 10 sur 1 234 chez marker.
+
+    Args:
+        row: ligne brute, cellules portant encore leurs marques `_BR`.
+
+    Returns:
+        Les parties de chaque cellule si la ligne empile des enregistrements, None sinon.
+    """
+    parts = [[p.strip() for p in cell.split(_BR)] for cell in row]
+    stacked = [p for p in parts if len(p) > 1]
+    if len(stacked) < 2 or len({len(p) for p in stacked}) != 1:
+        return None
+    numeric = sum(1 for p in stacked if sum(1 for q in p if q and _is_numeric_cell(q)) >= 2)
+    return parts if numeric >= 2 else None
+
+
+def _split_stacked_rows(table: Table) -> Table:
+    """Rend chaque `<br>` d'une cellule, soit à une espace, soit à une coupure de ligne.
+
+    L'espace est le comportement par défaut, celui d'un libellé replié en fin de ligne :
+    sans elle, les mots de deux lignes se soudent (« Prêts etavancesconsentispar
+    laSociété »). La coupure ne s'applique qu'aux lignes que `_stacked_parts` reconnaît,
+    et une cellule non coupée y garde sa valeur sur la première ligne produite.
+
+    Args:
+        table: grille brute sortie du parseur, marques `_BR` comprises.
+
+    Returns:
+        La grille sans aucune marque `_BR`.
+    """
+    rows: Table = []
+    for row in table:
+        parts = _stacked_parts(row)
+        if parts is None:
+            rows.append([cell.replace(_BR, " ").strip() for cell in row])
+            continue
+        height = max(len(p) for p in parts)
+        for i in range(height):
+            rows.append([p[i] if len(p) == height else (p[0] if i == 0 else "") for p in parts])
+    return rows
 
 
 def _rectangularize(table: Table) -> Table:
@@ -734,7 +794,7 @@ class _TableHTMLParser(HTMLParser):
             self._rowspan = self._span(attrs_dict.get("rowspan", 1))
             self._row_tags.append((tag, self._colspan))
         elif tag == "br" and self._in_cell:
-            self._cell += " "
+            self._cell += _BR
         elif tag == "tr":
             self._row = []
             self._row_tags = []
@@ -768,7 +828,9 @@ class _TableHTMLParser(HTMLParser):
                 self._rows.append(self._row)
                 self._tags.append(self._row_tags)
         elif tag == "table" and self._rows:
-            self.tables.append(self._rows)
+            # Le découpage vient après le traitement des fusions : il ajoute des lignes,
+            # et `_carried` compte en lignes du HTML.
+            self.tables.append(_split_stacked_rows(self._rows))
             self.markups.append(_read_markup(self._tags))
             self._carried = {}
 

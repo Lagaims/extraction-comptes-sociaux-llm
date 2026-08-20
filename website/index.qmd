@@ -10,24 +10,24 @@ cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de
 ```{=html}
 <div class="dx-tiles">
   <div class="dx-tile">
-    <span class="dx-tile-val" style="color:var(--dx-st-ok-ink)">91&nbsp;%</span>
+    <span class="dx-tile-val" style="color:var(--dx-st-ok-ink)">93&nbsp;%</span>
     <span class="dx-tile-lab">des valeurs attendues sont présentes quelque part dans
-      l'extraction (marker&nbsp;; 96&nbsp;% pour chandra)</span>
+      l'extraction (marker&nbsp;; 97&nbsp;% pour chandra)</span>
   </div>
   <div class="dx-tile">
     <span class="dx-tile-val">59&nbsp;%</span>
-    <span class="dx-tile-lab">arrivent dans la bonne cellule (marker&nbsp;; 75&nbsp;%
+    <span class="dx-tile-lab">arrivent dans la bonne cellule (marker&nbsp;; 78&nbsp;%
       pour chandra)</span>
   </div>
   <div class="dx-tile">
-    <span class="dx-tile-val" style="color:var(--dx-st-manquante-ink)">32&nbsp;pts</span>
-    <span class="dx-tile-lab">d'écart entre les deux chez marker, 21 chez chandra : de la
+    <span class="dx-tile-val" style="color:var(--dx-st-manquante-ink)">34&nbsp;pts</span>
+    <span class="dx-tile-lab">d'écart entre les deux chez marker, 19 chez chandra : de la
       donnée correctement lue, mais mal placée</span>
   </div>
   <div class="dx-tile">
     <span class="dx-tile-val">1&nbsp;%</span>
     <span class="dx-tile-lab">des cellules portent une vraie erreur de lecture de
-      chiffres (56 sur 5&nbsp;506 chez marker, 49 sur 5&nbsp;531 chez chandra)</span>
+      chiffres (55 sur 5&nbsp;518 chez marker, 49 sur 5&nbsp;543 chez chandra)</span>
   </div>
 </div>
 ```
@@ -38,10 +38,10 @@ cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de
   cellules chez marker et 0,9 % chez chandra. À l'inverse, plus d'un quart des cellules
   marker sont perdues faute de ligne ou de colonne appariée.
 - **Le meilleur prédicteur est la hauteur d'en-tête** — mais aucun remède mesuré ne la
-  rattrape. La récupération numérique vaut **64,7 % quand la hauteur détectée concorde
-  entre annotation et prédiction, 47,8 % sinon** (marker) ; 92,4 % contre 54,1 %
-  (chandra). Elle discorde sur 31 tableaux marker sur 71
-  et 19 chandra sur 75. Forcer la bonne hauteur, ou décaler la grille d'autant, ne rend
+  rattrape. La récupération numérique vaut **64,8 % quand la hauteur détectée concorde
+  entre annotation et prédiction, 47,9 % sinon** (marker) ; 91,9 % contre 58,7 %
+  (chandra). Elle discorde sur 31 tableaux marker sur 72
+  et 18 chandra sur 76. Forcer la bonne hauteur, ou décaler la grille d'autant, ne rend
   que 0,0 pt chez marker et 1,6 pt chez chandra : sur ces fichiers l'appariement des
   libellés échoue aussi, et une lecture purement positionnelle plafonnerait à 50,7 %.
 - **Le décalage est le plus souvent global.** Un simple décalage réaligne 90 % du tableau
@@ -55,7 +55,7 @@ cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de
   chez chandra — et l'appariement par rang compare parfois deux tableaux différents : un
   moteur qui découpe autrement que l'annotation décale toute la suite du SIREN. Les blocs
   qu'une page chandra sépare sont désormais recollés d'après son balisage (voir [Du JSON au
-  CSV](conversion.qmd)) ; il reste 5 SIREN sur 48 où le compte diffère.
+  CSV](conversion.qmd)) ; il reste 4 SIREN sur 48 où le compte diffère.
 
 ## Les quatre pages
 
@@ -69,9 +69,9 @@ cellule. Le problème n'est pas la lecture des caractères, mais l'alignement de
 
 ## Périmètre
 
-- Corpus `s3://projet-extraction-tableaux/reprise/` : **48 PDF** scannés, **75 tableaux**
+- Corpus `s3://projet-extraction-tableaux/reprise/` : **48 PDF** scannés, **76 tableaux**
   annotés à la main.
-- **146 paires** annotation/prédiction évaluées : marker 71, chandra 75.
+- **148 paires** annotation/prédiction évaluées : marker 72, chandra 76.
 - Les fonctions d'évaluation du dépôt — `detect_column_header_height`, `_match_headers`,
   `_normalize_numeric_str` — sont réutilisées telles quelles : le diagnostic décrit le
   pipeline en place, pas une réimplémentation.

@@ -7,9 +7,11 @@ Ces fonctions conditionnent directement les métriques `numeric_recovery` et
 import pytest
 from evaluation_extraction import (
     _is_numeric,
+    _lev_similarity,
     _looks_numeric,
     _normalize_numeric_str,
     _rank,
+    _unify_dashes,
 )
 
 
@@ -63,3 +65,42 @@ def test_looks_numeric_refuse_les_entetes(value):
 def test_rank(stem, expected):
     """Le tri lexicographique placerait `_10` avant `_2`, l'appariement se ferait de travers."""
     assert _rank(stem) == expected
+
+
+# ── équivalence des tirets ────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("annote", "predit"),
+    [
+        ("-", "—"),  # cadratin : la marque d'absence la plus courante des moteurs
+        ("-", "–"),  # demi-cadratin
+        ("-", "−"),  # signe moins Unicode
+        ("-30 000", "−30 000"),  # signe négatif devant un montant
+        ("- 30 000", "— 30 000"),
+    ],
+)
+def test_les_variantes_de_tiret_sont_equivalentes(annote, predit):
+    """Une marque d'absence ou un signe négatif ne doit pas dépendre du glyphe.
+
+    L'annotation écrit « - » là où les moteurs rendent « — » : 14 cellules de
+    `TAB_552096281_2` étaient comptées « texte à la place du nombre » pour cette seule
+    raison.
+    """
+    assert _normalize_numeric_str(annote) == _normalize_numeric_str(predit)
+    assert _unify_dashes(annote.strip()) == _unify_dashes(predit.strip())
+
+
+def test_le_tiret_demi_cadratin_ne_casse_plus_l_appariement_des_libelles():
+    """« A - FILIALES » et « A – FILIALES » désignent la même colonne.
+
+    Sans unification, la similarité tombe à 0,26 — sous le seuil de 0,5 — et la colonne
+    n'est appariée à rien.
+    """
+    assert _lev_similarity("A - FILIALES DETENUES", "A – FILIALES DETENUES") == 1.0
+
+
+def test_l_unification_ne_touche_que_les_tirets():
+    """Le reste du texte est rendu tel quel, accents et casse compris."""
+    assert _unify_dashes("Prêts et avances — Société") == "Prêts et avances - Société"
+    assert _unify_dashes("Capital social") == "Capital social"

@@ -103,7 +103,7 @@ def _norm_num(value: str) -> str:
     Returns:
         Forme canonique comparable, ou la chaîne d'origine si ce n'est pas un nombre.
     """
-    s = re.sub(r"[   ]", " ", str(value).strip())
+    s = E._unify_dashes(re.sub(r"[   ]", " ", str(value).strip()))
     neg = False
     if s.startswith("(") and s.endswith(")"):
         neg, s = True, s[1:-1].strip()

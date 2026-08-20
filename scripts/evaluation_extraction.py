@@ -146,8 +146,11 @@ METHODS_MERGING_PAGE_BREAKS = frozenset({"marker"})
 
 def _same_row(left: pd.Series, right: pd.Series) -> bool:
     """Deux lignes portent-elles exactement le même texte, à la graphie près ?"""
-    norm = [re.sub(r"\s+", " ", str(c)).strip().casefold() for c in left]
-    return norm == [re.sub(r"\s+", " ", str(c)).strip().casefold() for c in right]
+
+    def clef(serie):
+        return [_unify_dashes(re.sub(r"\s+", " ", str(c)).strip().casefold()) for c in serie]
+
+    return clef(left) == clef(right)
 
 
 def _is_label_row(row: pd.Series) -> bool:
@@ -330,6 +333,27 @@ def _list_pairs_from_correspondances(fs, pred_prefix: str) -> list[tuple[str, pd
 
 # ── Helpers cellules ──────────────────────────────────────────────────────────
 
+# Toutes les variantes de tiret jouent le même rôle dans ces tableaux — marque d'absence
+# dans une cellule de données, signe négatif devant un montant, séparateur dans un
+# libellé — et ne doivent donc pas distinguer deux valeurs. Les annotations écrivent
+# « - » là où les moteurs rendent « — » : sans cette équivalence, 14 cellules de
+# `TAB_552096281_2` étaient comptées comme du texte à la place d'un nombre, et
+# « A - FILIALES DETENUES » ne s'appariait pas à « A – FILIALES DETENUES » (similarité
+# 0,25, l'annotation et la prédiction ne différant que par le demi-cadratin).
+_DASHES = str.maketrans(dict.fromkeys("‐‑‒–—―−﹘﹣－", "-"))
+
+
+def _unify_dashes(value: str) -> str:
+    """Ramène toute variante de tiret au trait d'union.
+
+    Args:
+        value: chaîne brute.
+
+    Returns:
+        La même chaîne, tirets unifiés.
+    """
+    return value.translate(_DASHES)
+
 
 def _is_numeric(value: str) -> bool:
     s = value.strip().replace(",", ".").replace(" ", "").replace(" ", "")
@@ -394,8 +418,9 @@ def _normalize_numeric_str(val: str) -> str:
 
     - Supprime les espaces séparateurs de milliers : '25 000' → '25000'.
     - Convertit les pourcentages en décimales : '100%' → '1', '66,67%' → '0.6667'.
+    - Unifie les tirets : '—' → '-', '−30' → '-30'.
     """
-    s = val.strip()
+    s = _unify_dashes(val.strip())
     # Espaces séparateurs de milliers (normaux, insécables  ,  )
     s = re.sub(r"(\d)[\s  ]+(\d)", r"\1\2", s)
     # Pourcentages → décimales
@@ -419,12 +444,12 @@ def _cell_recovered(
     Si `strict` est True, comparaison de chaîne brute après strip — utilisée
     pour les cellules avec unités, parenthèses ou placeholders.
     """
-    target = val.strip() if strict else _normalize_numeric_str(val)
+    target = _unify_dashes(val.strip()) if strict else _normalize_numeric_str(val)
     for dc in range(-delta, delta + 1):
         c = pc + dc
         if 0 <= c < len(prediction.columns):
             cand = prediction.iloc[pr, c]
-            cand_norm = cand.strip() if strict else _normalize_numeric_str(cand)
+            cand_norm = _unify_dashes(cand.strip()) if strict else _normalize_numeric_str(cand)
             if cand_norm == target:
                 return True
     return False
@@ -508,6 +533,8 @@ def _levenshtein_distance(s: str, t: str) -> int:
 
 
 def _lev_similarity(a: str, b: str) -> float:
+    """Similarité de Levenshtein, tirets unifiés au préalable."""
+    a, b = _unify_dashes(a), _unify_dashes(b)
     if not a and not b:
         return 1.0
     return 1.0 - _levenshtein_distance(a, b) / max(len(a), len(b))
