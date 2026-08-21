@@ -9,6 +9,7 @@ from evaluation_extraction import (
     _is_numeric,
     _lev_similarity,
     _looks_numeric,
+    _normalize_label,
     _normalize_numeric_str,
     _rank,
     _unify_dashes,
@@ -104,3 +105,39 @@ def test_l_unification_ne_touche_que_les_tirets():
     """Le reste du texte est rendu tel quel, accents et casse compris."""
     assert _unify_dashes("Prêts et avances — Société") == "Prêts et avances - Société"
     assert _unify_dashes("Capital social") == "Capital social"
+
+
+# ── graphie des libellés ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("annote", "predit"),
+    [
+        ("Capital", "CAPITAL"),
+        ("Résultat dernier exercice clos", "RÉSULTAT DERNIER EXERCICE CLOS"),
+        ("Quote part du capital", "QUOTE PART DU CAPITAL"),
+        ("Chiffre d'affaires  HT", "CHIFFRE D'AFFAIRES HT"),
+        ("Prêts et avances", "PRETS ET AVANCES"),
+    ],
+)
+def test_la_graphie_ne_distingue_pas_deux_libelles(annote, predit):
+    """Casse, accents et espaces ne changent pas la colonne désignée.
+
+    Comparés tels quels, « Capital » et « CAPITAL » tombent à 0,14 de similarité, sous le
+    seuil de 0,5 : sur `TAB_300221017_1`, dont chandra compose l'en-tête en capitales, les
+    11 colonnes échouaient à s'apparier et les 350 cellules de données étaient comptées
+    perdues alors que l'extraction est juste.
+    """
+    assert _lev_similarity(annote, predit) == 1.0
+
+
+def test_la_normalisation_ne_confond_pas_deux_libelles_distincts():
+    """Deux colonnes réellement différentes restent distinctes."""
+    assert _lev_similarity("Valeur brute", "Valeur nette") < 0.9
+    assert _lev_similarity("Capital", "Capitaux propres") < 0.6
+
+
+def test_normalize_label_ne_touche_que_la_graphie():
+    """Le libellé garde ses mots : seule sa graphie est canonisée."""
+    assert _normalize_label("  RÉSULTAT   dernier  Exercice ") == "resultat dernier exercice"
+    assert _normalize_label("A — FILIALES") == "a - filiales"

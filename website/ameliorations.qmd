@@ -18,8 +18,8 @@ reconnaissance est la piste la moins rentable du lot.
 Chaque gain de cette page a été obtenu en rejouant l'évaluation avec le levier isolé, sur
 un corpus antérieur à deux changements : le recollage des blocs d'une même page côté
 chandra, et la correction d'une annotation de `432668432`. Les points de départ ont bougé —
-`col_recovery` 0,840 → **0,870** (marker) et 0,916 → **0,966** (chandra), récupération par
-cellule 52,7 → **55,4 %** et 68,6 → **77,9 %** (voir [Chiffres et
+`col_recovery` 0,840 → **0,877** (marker) et 0,916 → **0,980** (chandra), récupération par
+cellule 52,7 → **55,7 %** et 68,6 → **82,8 %** (voir [Chiffres et
 cas](chiffres.qmd#métriques-publiées)). Le classement des leviers reste valable, les points
 d'arrivée sont à remesurer. Les mesures ne relevant pas d'un rejeu, elles, sont à jour.
 :::
@@ -44,9 +44,14 @@ libellés qui prend la tête.
 L'appariement compare les libellés par distance de Levenshtein brute, puis applique le
 seuil de 0,5 *après* le matching stable. Trois faiblesses, chacune mesurée séparément :
 
-- **Casse, accents et ponctuation comptent.** `'A - FILIALES DETENUES'` contre
-  `'A – FILIALES DETENUES'` — un tiret demi-cadratin — tombe à 0,26. Normaliser avant
-  comparaison : **+1,2 pt de `col_recovery`**.
+- ~~**Casse, accents et ponctuation comptent.**~~ **Fait.** `_normalize_label` ramène
+  casse, accents, espaces et variantes de tiret à une graphie canonique avant la
+  comparaison. Sans elle, `'Capital'` et `'CAPITAL'` tombaient à 0,14 de similarité, sous
+  le seuil : sur `TAB_300221017_1`, dont chandra compose tout l'en-tête en capitales, les
+  11 colonnes échouaient à s'apparier et les 350 cellules de données étaient comptées
+  perdues — 0 % de récupération numérique pour une extraction juste à 94 %. Mesuré sur le
+  corpus : **+0,7 pt de `col_recovery` chez marker, +1,4 pt chez chandra**, aucun fichier
+  dégradé.
 - **Un mot ajouté fait chuter la similarité.** `'Capital'` contre `'Capital | Nette'`
   donne 0,47, juste sous le seuil. Une similarité par inclusion de jetons combinée à
   Levenshtein : **+5,5 pts de `col_recovery`** (0,840 → 0,895).
@@ -130,8 +135,8 @@ loin. Avec une tolérance de ±1 colonne, la récupération numérique passe de 
   que les fusions et les en-têtes s'alignent.
 
 ::: {.dx-evidence}
-**Preuve.** 208 cellules marker et 492 cellules chandra sont en « bonne ligne, colonne
-décalée » — 3,8 % et 8,9 % des cellules attendues ; la tolérance ±1 en rattrape 317 et 485,
+**Preuve.** 209 cellules marker et 497 cellules chandra sont en « bonne ligne, colonne
+décalée » — 3,8 % et 9,0 % des cellules attendues ; la tolérance ±1 en rattrape 317 et 485,
 soit davantage que ce seul poste : elle récupère aussi des cellules classées ailleurs.
 :::
 ::::

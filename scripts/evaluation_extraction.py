@@ -29,6 +29,7 @@ Usage :
 import argparse
 import io
 import re
+import unicodedata
 from collections import Counter
 from pathlib import Path
 
@@ -355,6 +356,31 @@ def _unify_dashes(value: str) -> str:
     return value.translate(_DASHES)
 
 
+def _normalize_label(value: str) -> str:
+    """Ramène un libellé à sa graphie canonique, pour la seule comparaison.
+
+    Casse, accents, espaces et variantes de tiret ne distinguent pas deux libellés : un
+    moteur qui compose ses en-têtes en capitales décrit les mêmes colonnes qu'une
+    annotation en bas de casse. Comparées telles quelles par distance de Levenshtein,
+    « Capital » et « CAPITAL » tombent à 0,14 de similarité — sous le seuil de 0,5, donc
+    non appariées. Sur `TAB_300221017_1`, chandra rend l'en-tête entier en capitales :
+    les 11 colonnes échouaient à s'apparier et les 350 cellules de données étaient
+    comptées perdues, pour une extraction pourtant juste.
+
+    Args:
+        value: libellé brut.
+
+    Returns:
+        Le libellé sans accents, en bas de casse, espaces réduits, tirets unifiés.
+    """
+    sans_accents = "".join(
+        c
+        for c in unicodedata.normalize("NFKD", _unify_dashes(value))
+        if not unicodedata.combining(c)
+    )
+    return " ".join(sans_accents.casefold().split())
+
+
 def _is_numeric(value: str) -> bool:
     s = value.strip().replace(",", ".").replace(" ", "").replace(" ", "")
     if not s:
@@ -533,8 +559,8 @@ def _levenshtein_distance(s: str, t: str) -> int:
 
 
 def _lev_similarity(a: str, b: str) -> float:
-    """Similarité de Levenshtein, tirets unifiés au préalable."""
-    a, b = _unify_dashes(a), _unify_dashes(b)
+    """Similarité de Levenshtein, libellés ramenés à leur graphie canonique."""
+    a, b = _normalize_label(a), _normalize_label(b)
     if not a and not b:
         return 1.0
     return 1.0 - _levenshtein_distance(a, b) / max(len(a), len(b))
